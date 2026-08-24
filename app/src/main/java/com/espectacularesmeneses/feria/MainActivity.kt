@@ -79,10 +79,12 @@ import com.espectacularesmeneses.feria.model.GameSession
 import com.espectacularesmeneses.feria.model.MenesesCard
 import com.espectacularesmeneses.feria.model.NfcOperation
 import com.espectacularesmeneses.feria.model.RechargeAuthorization
+import com.espectacularesmeneses.feria.model.RechargePromotion
 import com.espectacularesmeneses.feria.model.RechargeSession
 import com.espectacularesmeneses.feria.network.DeviceHeartbeatApiClient
 import com.espectacularesmeneses.feria.network.GameManagementApiClient
 import com.espectacularesmeneses.feria.network.MenesesApiClient
+import com.espectacularesmeneses.feria.network.PromotionApiClient
 import com.espectacularesmeneses.feria.network.RechargeManagementApiClient
 import com.espectacularesmeneses.feria.network.ReportsApiClient
 import com.espectacularesmeneses.feria.nfc.MenesesCardCodec
@@ -2507,6 +2509,72 @@ class MainActivity :
     }
 
 
+    private fun preparePromotionalRecharge(
+        promotion: RechargePromotion
+    ) {
+
+        val session =
+            rechargeSession
+                ?: run {
+
+                    showError(
+                        "No existe una sesión RECHARGE activa."
+                    )
+
+                    return
+                }
+
+        if (
+            promotion.id.isBlank() ||
+            promotion.cashAmount <= 0 ||
+            promotion.promotionalAmount < 0 ||
+            promotion.totalCreditAmount <= 0
+        ) {
+
+            showError(
+                "La promoción seleccionada no es válida."
+            )
+
+            return
+        }
+
+        pendingOperation =
+            NfcOperation.PromotionalRecharge(
+
+                promotionId =
+                    promotion.id,
+
+                promotionName =
+                    promotion.name,
+
+                cashAmount =
+                    promotion.cashAmount,
+
+                promotionalAmount =
+                    promotion.promotionalAmount,
+
+                totalCreditAmount =
+                    promotion.totalCreditAmount
+            )
+
+        cardResult =
+            CardReadResult
+                .WaitingForDevCard(
+
+                    title =
+                        promotion.name,
+
+                    message =
+                        "Taquilla: ${session.rechargePointName}\n\n" +
+                                "Cliente paga: \$${promotion.cashAmount}\n" +
+                                "Bonificación: +\$${promotion.promotionalAmount}\n" +
+                                "Total acreditado: \$${promotion.totalCreditAmount}\n\n" +
+                                "NFC · LECTOR ACTIVO\n\n" +
+                                "Acerca una tarjeta CLIENTE."
+                )
+    }
+
+
     private fun prepareCharge(
         peopleCount: Int
     ) {
@@ -2799,6 +2867,21 @@ class MainActivity :
                         tag,
                         uid,
                         operation.amount
+                    )
+                }
+
+                is NfcOperation.PromotionalRecharge -> {
+
+                    promotionalRechargeCard(
+
+                        tag =
+                            tag,
+
+                        uid =
+                            uid,
+
+                        operation =
+                            operation
                     )
                 }
 
@@ -4178,6 +4261,147 @@ class MainActivity :
 
     /*
      * =====================================================
+     * PROMOTIONAL RECHARGE
+     * =====================================================
+     */
+
+    private fun promotionalRechargeCard(
+        tag: Tag,
+        uid: String,
+        operation: NfcOperation.PromotionalRecharge
+    ) {
+
+        var transactionId:
+                String? =
+            null
+
+        var cardWasWritten =
+            false
+
+        try {
+
+            val currentCard =
+                readCustomerCard(
+                    tag
+                )
+
+            val authorization =
+                authorizePromotionalRechargeWithRecovery(
+
+                    card =
+                        currentCard,
+
+                    uid =
+                        uid,
+
+                    promotionId =
+                        operation.promotionId
+                )
+
+            transactionId =
+                authorization.transactionId
+
+            validateAuthorizationBefore(
+                currentCard,
+                authorization.cardId,
+                authorization.balanceBefore,
+                authorization.counterBefore
+            )
+
+            /*
+             * El servidor es la autoridad financiera.
+             *
+             * Aunque la operación conserva los importes de la
+             * promoción para mostrarlos en pantalla, el saldo
+             * que se escribe físicamente siempre proviene de
+             * authorization.balanceAfter.
+             */
+
+            val updatedCard =
+                currentCard.copy(
+
+                    balance =
+                        authorization.balanceAfter,
+
+                    transactionCounter =
+                        authorization.counterAfter
+                )
+
+            Ntag215Writer
+                .writeMenesesData(
+
+                    tag,
+
+                    MenesesCardCodec
+                        .encode(
+                            updatedCard
+                        )
+                )
+
+            cardWasWritten =
+                true
+
+            verifyCard(
+                tag,
+                updatedCard
+            )
+
+            confirmTransactionWithRetry(
+
+                transactionId =
+                    authorization.transactionId,
+
+                cardId =
+                    updatedCard.cardId,
+
+                uid =
+                    uid,
+
+                writtenBalance =
+                    updatedCard.balance,
+
+                writtenCounter =
+                    updatedCard.transactionCounter
+            )
+
+            pendingOperation =
+                NfcOperation.Read
+
+            runOnUiThread {
+
+                cardResult =
+                    CardReadResult
+                        .Success(
+
+                            title =
+                                "Promoción aplicada",
+
+                            message =
+                                "${operation.promotionName}\n\n" +
+                                        "Cliente pagó: \$${operation.cashAmount}\n" +
+                                        "Bonificación: +\$${operation.promotionalAmount}\n" +
+                                        "Total acreditado: \$${operation.totalCreditAmount}\n\n" +
+                                        "Saldo anterior: \$${authorization.balanceBefore}\n" +
+                                        "Saldo nuevo: \$${authorization.balanceAfter}"
+                        )
+            }
+
+        } catch (
+            e: Exception
+        ) {
+
+            handleTransactionFailure(
+                transactionId,
+                cardWasWritten,
+                "recarga promocional",
+                e
+            )
+        }
+    }
+
+
+    /*
+     * =====================================================
      * CHARGE
      * =====================================================
      */
@@ -4746,6 +4970,92 @@ class MainActivity :
                     amount,
                     card.balance,
                     card.transactionCounter
+                )
+        }
+    }
+
+
+    private fun authorizePromotionalRechargeWithRecovery(
+        card: MenesesCard,
+        uid: String,
+        promotionId: String
+    ): RechargeAuthorization {
+
+        try {
+
+            return PromotionApiClient
+                .authorizePromotionalRecharge(
+
+                    cardId =
+                        card.cardId,
+
+                    uid =
+                        uid,
+
+                    promotionId =
+                        promotionId,
+
+                    cardBalance =
+                        card.balance,
+
+                    cardCounter =
+                        card.transactionCounter
+                )
+
+        } catch (
+            e: Exception
+        ) {
+
+            if (
+                !hasServerErrorCode(
+                    e,
+                    "CARD_STATE_MISMATCH"
+                )
+            ) {
+
+                throw e
+            }
+
+            Log.w(
+                "MENESES_RECONCILIATION",
+
+                "CARD_STATE_MISMATCH en PROMOTIONAL_RECHARGE. " +
+                        "Intentando reconciliación automática. " +
+                        "cardId=${card.cardId}, " +
+                        "balance=${card.balance}, " +
+                        "counter=${card.transactionCounter}, " +
+                        "promotionId=$promotionId"
+            )
+
+            /*
+             * Sólo se intenta reconciliar una vez.
+             *
+             * Si el segundo AUTHORIZE vuelve a fallar,
+             * el error continúa por el flujo normal.
+             */
+
+            reconcileCustomerCard(
+                card,
+                uid
+            )
+
+            return PromotionApiClient
+                .authorizePromotionalRecharge(
+
+                    cardId =
+                        card.cardId,
+
+                    uid =
+                        uid,
+
+                    promotionId =
+                        promotionId,
+
+                    cardBalance =
+                        card.balance,
+
+                    cardCounter =
+                        card.transactionCounter
                 )
         }
     }

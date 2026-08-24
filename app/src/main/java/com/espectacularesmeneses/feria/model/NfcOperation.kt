@@ -40,10 +40,24 @@ sealed class NfcOperation {
         NfcOperation()
 
     /*
-     * Recarga realizada por una TAQUILLA.
+     * Recarga normal realizada por una TAQUILLA.
      */
     data class Recharge(
         val amount: Long
+    ) :
+        NfcOperation()
+
+    /*
+     * Recarga promocional realizada por una TAQUILLA.
+     *
+     * El backend sigue siendo la autoridad del monto acreditado.
+     */
+    data class PromotionalRecharge(
+        val promotionId: String,
+        val promotionName: String,
+        val cashAmount: Long,
+        val promotionalAmount: Long,
+        val totalCreditAmount: Long
     ) :
         NfcOperation()
 
