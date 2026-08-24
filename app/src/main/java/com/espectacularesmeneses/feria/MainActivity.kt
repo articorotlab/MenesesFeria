@@ -115,8 +115,10 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 class MainActivity :
@@ -718,6 +720,14 @@ class MainActivity :
 
                         prepareRecharge(
                             amount
+                        )
+                    },
+
+                    onPreparePromotionalRecharge = {
+                            promotion ->
+
+                        preparePromotionalRecharge(
+                            promotion
                         )
                     },
 
@@ -5601,6 +5611,7 @@ fun MenesesHomeScreen(
     onPrepareRechargePointCard: (AdminRechargePoint) -> Unit,
     onRefreshRechargePoints: () -> Unit,
     onPrepareRecharge: (Long) -> Unit,
+    onPreparePromotionalRecharge: (RechargePromotion) -> Unit,
     onPrepareAdminRecharge: (Long) -> Unit,
     onPrepareAdminAdjustment: (Long) -> Unit,
     onRefreshAdminCash: () -> Unit,
@@ -5651,6 +5662,7 @@ fun MenesesHomeScreen(
                 is CardReadResult.Success ->
                     cardResult.title == "Cobro realizado" ||
                             cardResult.title == "Recarga taquilla realizada" ||
+                            cardResult.title == "Promoción aplicada" ||
                             cardResult.title == "Saldo consultado" ||
                             cardResult.title == "Cliente nuevo creado"
 
@@ -5702,10 +5714,7 @@ fun MenesesHomeScreen(
                         cardResult is CardReadResult.WaitingForRecharge ||
                                 cardResult is CardReadResult.WaitingForBalance ||
                                 cardResult is CardReadResult.WaitingForHistory ||
-                                (
-                                        cardResult is CardReadResult.WaitingForDevCard &&
-                                                cardResult.title == "Crear nueva CUSTOMER"
-                                        )
+                                cardResult is CardReadResult.WaitingForDevCard
                         )
 
     val activeGames = adminGames.count { it.status == "ACTIVE" }
@@ -6039,6 +6048,7 @@ fun MenesesHomeScreen(
                                     },
                                     operationArmed = operationArmed,
                                     onPrepareRecharge = onPrepareRecharge,
+                                    onPreparePromotionalRecharge = onPreparePromotionalRecharge,
                                     onPrepareBalance = onPrepareBalance,
                                     onPrepareHistory = onPrepareHistory,
                                     onCreateCustomer = onCreateCustomer,
@@ -7555,12 +7565,48 @@ private fun RechargeNfcWaitingPage(
         }
 
         is CardReadResult.WaitingForDevCard -> {
-            title = "Crear nuevo cliente"
-            description =
-                "Acerca una tarjeta NTAG215 vacía para crear un nuevo CLIENTE."
-            accent = MenesesBlue
-            softBackground = MenesesBlueSoft
-            darkText = MenesesBlueDark
+            if (
+                cardResult.title ==
+                "Crear nueva CUSTOMER"
+            ) {
+                title =
+                    "Crear nuevo cliente"
+
+                description =
+                    "Acerca una tarjeta NTAG215 vacía para crear un nuevo CLIENTE."
+
+                accent =
+                    MenesesBlue
+
+                softBackground =
+                    MenesesBlueSoft
+
+                darkText =
+                    MenesesBlueDark
+
+            } else {
+                /*
+                 * En una sesión TAQUILLA, WaitingForDevCard también
+                 * representa una recarga promocional preparada.
+                 *
+                 * preparePromotionalRecharge() ya construyó el título
+                 * y el detalle financiero que debemos mostrar.
+                 */
+                title =
+                    cardResult.title
+
+                description =
+                    cardResult.message
+
+                accent =
+                    MenesesGreen
+
+                softBackground =
+                    MenesesGreenSoft
+
+                darkText =
+                    MenesesGreenDark
+            }
         }
 
         else -> {
@@ -7775,11 +7821,532 @@ private fun RechargeDashboard(
     onCustomAmountTextChange: (String) -> Unit,
     operationArmed: Boolean,
     onPrepareRecharge: (Long) -> Unit,
+    onPreparePromotionalRecharge: (RechargePromotion) -> Unit,
     onPrepareBalance: () -> Unit,
     onPrepareHistory: () -> Unit,
     onCreateCustomer: () -> Unit,
     onLogoutRecharge: () -> Unit
 ) {
+    /*
+     * =====================================================
+     * PROMOTIONS UI STATE
+     * =====================================================
+     *
+     * La pantalla principal de TAQUILLA conserva exactamente
+     * el flujo de recarga normal.
+     *
+     * "Promociones" abre una segunda pantalla dentro del mismo
+     * dashboard. La lista viene siempre del servidor.
+     * =====================================================
+     */
+
+    var showPromotions
+            by remember(
+                rechargeSession.sessionId
+            ) {
+                mutableStateOf(
+                    false
+                )
+            }
+
+    var promotions
+            by remember(
+                rechargeSession.sessionId
+            ) {
+                mutableStateOf<
+                        List<RechargePromotion>
+                        >(
+                    emptyList()
+                )
+            }
+
+    var promotionsLoading
+            by remember(
+                rechargeSession.sessionId
+            ) {
+                mutableStateOf(
+                    false
+                )
+            }
+
+    var promotionsError
+            by remember(
+                rechargeSession.sessionId
+            ) {
+                mutableStateOf<String?>(
+                    null
+                )
+            }
+
+    var promotionsRefreshKey
+            by remember(
+                rechargeSession.sessionId
+            ) {
+                mutableIntStateOf(
+                    0
+                )
+            }
+
+    /*
+     * La llamada HTTP es síncrona, por lo que se ejecuta en IO
+     * para no bloquear el hilo principal de Compose.
+     *
+     * Cada vez que abrimos Promociones consultamos nuevamente
+     * el servidor para reflejar altas, cambios y desactivaciones
+     * hechas por ADMIN.
+     */
+    LaunchedEffect(
+        showPromotions,
+        promotionsRefreshKey,
+        rechargeSession.sessionId
+    ) {
+
+        if (
+            !showPromotions
+        ) {
+            return@LaunchedEffect
+        }
+
+        promotionsLoading =
+            true
+
+        promotionsError =
+            null
+
+        try {
+
+            val loadedPromotions =
+                withContext(
+                    Dispatchers.IO
+                ) {
+                    PromotionApiClient
+                        .getActivePromotions()
+                }
+
+            promotions =
+                loadedPromotions
+
+        } catch (
+            e: Exception
+        ) {
+
+            promotionsError =
+                e.message
+                    ?: "No fue posible cargar las promociones."
+
+        } finally {
+
+            promotionsLoading =
+                false
+        }
+    }
+
+    /*
+     * =====================================================
+     * PROMOTIONS PAGE
+     * =====================================================
+     */
+
+    if (
+        showPromotions
+    ) {
+
+        Row(
+            modifier =
+                Modifier.fillMaxWidth(),
+            horizontalArrangement =
+                Arrangement.Start
+        ) {
+            OutlinedButton(
+                enabled =
+                    !operationArmed,
+                onClick = {
+                    showPromotions =
+                        false
+                }
+            ) {
+                Text(
+                    "←  Volver a recargas"
+                )
+            }
+        }
+
+        ModeHeroCard(
+            emoji =
+                "🎁",
+            title =
+                "Promociones",
+            subtitle =
+                rechargeSession
+                    .rechargePointName,
+            background =
+                MenesesPurple
+        )
+
+        when {
+
+            promotionsLoading -> {
+
+                Card(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(
+                            24.dp
+                        ),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MenesesSurface
+                        )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    22.dp
+                                ),
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally,
+                        verticalArrangement =
+                            Arrangement.spacedBy(
+                                10.dp
+                            )
+                    ) {
+                        Text(
+                            "Cargando promociones…",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium,
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        Text(
+                            "Consultando las promociones activas del servidor.",
+                            color =
+                                MenesesTextSecondary,
+                            textAlign =
+                                TextAlign.Center
+                        )
+                    }
+                }
+            }
+
+            promotionsError != null -> {
+
+                Card(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(
+                            24.dp
+                        ),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MenesesSurface
+                        )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    22.dp
+                                ),
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally,
+                        verticalArrangement =
+                            Arrangement.spacedBy(
+                                12.dp
+                            )
+                    ) {
+                        Text(
+                            "No fue posible cargar las promociones",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium,
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
+                        )
+
+                        Text(
+                            promotionsError
+                                ?: "Error desconocido.",
+                            color =
+                                MenesesTextSecondary,
+                            textAlign =
+                                TextAlign.Center
+                        )
+
+                        OutlinedButton(
+                            enabled =
+                                !operationArmed,
+                            onClick = {
+                                promotionsRefreshKey +=
+                                    1
+                            }
+                        ) {
+                            Text(
+                                "↻  Intentar nuevamente"
+                            )
+                        }
+                    }
+                }
+            }
+
+            promotions.isEmpty() -> {
+
+                Card(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(
+                            24.dp
+                        ),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MenesesSurface
+                        )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    22.dp
+                                ),
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally,
+                        verticalArrangement =
+                            Arrangement.spacedBy(
+                                10.dp
+                            )
+                    ) {
+                        Text(
+                            "No hay promociones disponibles",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium,
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        Text(
+                            "Cuando ADMIN active una promoción aparecerá aquí.",
+                            color =
+                                MenesesTextSecondary,
+                            textAlign =
+                                TextAlign.Center
+                        )
+
+                        OutlinedButton(
+                            enabled =
+                                !operationArmed,
+                            onClick = {
+                                promotionsRefreshKey +=
+                                    1
+                            }
+                        ) {
+                            Text(
+                                "↻  Actualizar"
+                            )
+                        }
+                    }
+                }
+            }
+
+            else -> {
+
+                Text(
+                    "Selecciona una promoción",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .titleLarge,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                promotions.forEach {
+                        promotion ->
+
+                    Button(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .height(
+                                    112.dp
+                                ),
+                        enabled =
+                            !operationArmed,
+                        shape =
+                            RoundedCornerShape(
+                                22.dp
+                            ),
+                        colors =
+                            ButtonDefaults
+                                .buttonColors(
+                                    containerColor =
+                                        MenesesSurface,
+                                    contentColor =
+                                        MaterialTheme
+                                            .colorScheme
+                                            .onSurface,
+                                    disabledContainerColor =
+                                        MenesesSurface,
+                                    disabledContentColor =
+                                        MenesesTextSecondary
+                                ),
+                        onClick = {
+
+                            /*
+                             * Cerramos la lista antes de armar la
+                             * operación. Enseguida cardResult pasa a
+                             * WaitingForDevCard y MenesesHomeScreen
+                             * muestra RechargeNfcWaitingPage.
+                             */
+                            showPromotions =
+                                false
+
+                            onPreparePromotionalRecharge(
+                                promotion
+                            )
+                        }
+                    ) {
+                        Row(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        horizontal =
+                                            4.dp
+                                    ),
+                            verticalAlignment =
+                                Alignment.CenterVertically,
+                            horizontalArrangement =
+                                Arrangement.spacedBy(
+                                    14.dp
+                                )
+                        ) {
+                            Box(
+                                modifier =
+                                    Modifier
+                                        .size(
+                                            54.dp
+                                        )
+                                        .background(
+                                            MenesesPurpleSoft,
+                                            RoundedCornerShape(
+                                                17.dp
+                                            )
+                                        ),
+                                contentAlignment =
+                                    Alignment.Center
+                            ) {
+                                Text(
+                                    "🎁",
+                                    fontSize =
+                                        25.sp
+                                )
+                            }
+
+                            Column(
+                                modifier =
+                                    Modifier.weight(
+                                        1f
+                                    ),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(
+                                        4.dp
+                                    )
+                            ) {
+                                Text(
+                                    promotion.name,
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .titleMedium,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    "Paga \$${promotion.cashAmount}  ·  " +
+                                            "Recibe \$${promotion.totalCreditAmount}",
+                                    color =
+                                        MenesesTextSecondary,
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .bodyMedium
+                                )
+
+                                if (
+                                    promotion.promotionalAmount >
+                                    0
+                                ) {
+                                    Text(
+                                        "Bonificación: +\$${promotion.promotionalAmount}",
+                                        color =
+                                            MenesesPurple,
+                                        style =
+                                            MaterialTheme
+                                                .typography
+                                                .bodyMedium,
+                                        fontWeight =
+                                            FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Text(
+                                "›",
+                                color =
+                                    MenesesPurple,
+                                fontSize =
+                                    30.sp,
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    enabled =
+                        !operationArmed,
+                    onClick = {
+                        promotionsRefreshKey +=
+                            1
+                    }
+                ) {
+                    Text(
+                        "↻  Actualizar promociones"
+                    )
+                }
+            }
+        }
+
+        return
+    }
+
+    /*
+     * =====================================================
+     * NORMAL RECHARGE PAGE
+     * =====================================================
+     */
+
     ModeHeroCard(
         emoji = "🏪",
         title = rechargeSession.rechargePointName,
@@ -7833,6 +8400,46 @@ private fun RechargeDashboard(
         onClick = { selectedRechargeAmount?.let(onPrepareRecharge) }
     )
 
+    /*
+     * Las promociones son una ruta adicional.
+     * La recarga normal de TAQUILLA permanece intacta.
+     */
+    OutlinedButton(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .height(
+                    58.dp
+                ),
+        enabled =
+            !operationArmed,
+        shape =
+            RoundedCornerShape(
+                18.dp
+            ),
+        onClick = {
+            showPromotions =
+                true
+
+            /*
+             * Fuerza una lectura fresca cada vez que el cajero
+             * abre la pantalla, incluso si ya la había visitado.
+             */
+            promotionsRefreshKey +=
+                1
+        }
+    ) {
+        Text(
+            "🎁  Promociones",
+            style =
+                MaterialTheme
+                    .typography
+                    .titleMedium,
+            fontWeight =
+                FontWeight.Bold
+        )
+    }
+
     SectionTitle("Atención al cliente")
 
     ActionTile(
@@ -7856,7 +8463,6 @@ private fun RechargeDashboard(
         rightEnabled = !operationArmed,
         rightOnClick = onPrepareBalance
     )
-
 }
 
 @Composable
