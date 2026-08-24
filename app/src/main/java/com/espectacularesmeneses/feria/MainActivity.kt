@@ -9417,6 +9417,9 @@ private fun NfcResultArea(cardResult: CardReadResult, onCancelOperation: () -> U
                 "Recarga taquilla realizada" ->
                     RechargeSuccessCard(cardResult.message)
 
+                "Promoción aplicada" ->
+                    PromotionSuccessCard(cardResult.message)
+
                 "Cliente nuevo creado" ->
                     NewCustomerSuccessCard(cardResult.message)
 
@@ -9680,6 +9683,396 @@ private fun RechargeSuccessCard(
     }
 }
 
+@Composable
+private fun PromotionSuccessCard(
+    description: String
+) {
+    val lines =
+        description
+            .lines()
+            .filter {
+                it.isNotBlank()
+            }
+
+    val promotionName =
+        lines.firstOrNull()
+            ?: "Promoción"
+
+    val paidLine =
+        lines.firstOrNull {
+            it.startsWith("Cliente pagó:")
+        }
+
+    val bonusLine =
+        lines.firstOrNull {
+            it.startsWith("Bonificación:")
+        }
+
+    val totalLine =
+        lines.firstOrNull {
+            it.startsWith("Total acreditado:")
+        }
+
+    val previousBalanceLine =
+        lines.firstOrNull {
+            it.startsWith("Saldo anterior:")
+        }
+
+    val newBalanceLine =
+        lines.firstOrNull {
+            it.startsWith("Saldo nuevo:")
+        }
+
+    Card(
+        modifier =
+            Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(28.dp),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    MenesesGreenSoft
+            )
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = 22.dp,
+                        vertical = 26.dp
+                    ),
+            horizontalAlignment =
+                Alignment.CenterHorizontally,
+            verticalArrangement =
+                Arrangement.spacedBy(14.dp)
+        ) {
+
+            /*
+             * Indicador principal de operación exitosa.
+             */
+            Surface(
+                shape =
+                    RoundedCornerShape(50.dp),
+                color =
+                    MenesesGreen
+            ) {
+                Text(
+                    text = "✓",
+                    modifier =
+                        Modifier.padding(
+                            horizontal = 18.dp,
+                            vertical = 8.dp
+                        ),
+                    color =
+                        Color.White,
+                    fontSize =
+                        30.sp,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+            }
+
+            Text(
+                text =
+                    "Promoción aplicada",
+                color =
+                    MenesesGreenDark,
+                style =
+                    MaterialTheme.typography.headlineMedium,
+                fontWeight =
+                    FontWeight.Bold,
+                textAlign =
+                    TextAlign.Center
+            )
+
+            /*
+             * Nombre comercial de la promoción.
+             */
+            Surface(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                shape =
+                    RoundedCornerShape(18.dp),
+                color =
+                    Color.White.copy(
+                        alpha = 0.72f
+                    )
+            ) {
+                Text(
+                    text =
+                        promotionName,
+                    modifier =
+                        Modifier.padding(
+                            horizontal = 18.dp,
+                            vertical = 16.dp
+                        ),
+                    color =
+                        MenesesGreenDark,
+                    style =
+                        MaterialTheme.typography.titleLarge,
+                    fontWeight =
+                        FontWeight.Bold,
+                    textAlign =
+                        TextAlign.Center
+                )
+            }
+
+            HorizontalDivider(
+                color =
+                    MenesesGreen.copy(
+                        alpha = 0.20f
+                    )
+            )
+
+            /*
+             * Desglose económico.
+             */
+            Column(
+                modifier =
+                    Modifier.fillMaxWidth(),
+                verticalArrangement =
+                    Arrangement.spacedBy(10.dp)
+            ) {
+
+                if (paidLine != null) {
+                    PromotionResultRow(
+                        label =
+                            "Cliente pagó",
+                        value =
+                            paidLine.substringAfter(":")
+                                .trim(),
+                        emphasized =
+                            false
+                    )
+                }
+
+                if (bonusLine != null) {
+                    PromotionResultRow(
+                        label =
+                            "Bonificación",
+                        value =
+                            bonusLine.substringAfter(":")
+                                .trim(),
+                        emphasized =
+                            true
+                    )
+                }
+            }
+
+            /*
+             * Total acreditado.
+             */
+            if (totalLine != null) {
+                Surface(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(20.dp),
+                    color =
+                        MenesesGreen.copy(
+                            alpha = 0.12f
+                        )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally,
+                        verticalArrangement =
+                            Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text =
+                                "TOTAL ACREDITADO",
+                            color =
+                                MenesesTextSecondary,
+                            style =
+                                MaterialTheme.typography.labelLarge,
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
+                        )
+
+                        Text(
+                            text =
+                                totalLine.substringAfter(":")
+                                    .trim(),
+                            color =
+                                MenesesGreen,
+                            fontSize =
+                                38.sp,
+                            lineHeight =
+                                44.sp,
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(
+                color =
+                    MenesesGreen.copy(
+                        alpha = 0.20f
+                    )
+            )
+
+            /*
+             * Comparación de saldo anterior y saldo nuevo.
+             */
+            if (
+                previousBalanceLine != null ||
+                newBalanceLine != null
+            ) {
+                Column(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally,
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
+                ) {
+
+                    if (previousBalanceLine != null) {
+                        Text(
+                            text =
+                                previousBalanceLine,
+                            color =
+                                MenesesTextSecondary,
+                            style =
+                                MaterialTheme.typography.bodyLarge,
+                            textAlign =
+                                TextAlign.Center
+                        )
+                    }
+
+                    if (newBalanceLine != null) {
+                        Text(
+                            text =
+                                "SALDO NUEVO",
+                            color =
+                                MenesesTextSecondary,
+                            style =
+                                MaterialTheme.typography.labelLarge,
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
+                        )
+
+                        Text(
+                            text =
+                                newBalanceLine
+                                    .substringAfter(":")
+                                    .trim(),
+                            color =
+                                MenesesGreenDark,
+                            fontSize =
+                                44.sp,
+                            lineHeight =
+                                50.sp,
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
+                        )
+                    }
+                }
+            }
+
+            Text(
+                text =
+                    "✓ Recarga completada correctamente",
+                color =
+                    MenesesGreenDark,
+                style =
+                    MaterialTheme.typography.titleSmall,
+                fontWeight =
+                    FontWeight.Bold,
+                textAlign =
+                    TextAlign.Center
+            )
+
+            Text(
+                text =
+                    "Este mensaje se cerrará automáticamente en 1 minuto.",
+                color =
+                    MenesesTextSecondary,
+                style =
+                    MaterialTheme.typography.labelMedium,
+                textAlign =
+                    TextAlign.Center
+            )
+        }
+    }
+}
+
+
+@Composable
+private fun PromotionResultRow(
+    label: String,
+    value: String,
+    emphasized: Boolean
+) {
+    Surface(
+        modifier =
+            Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(14.dp),
+        color =
+            Color.White.copy(
+                alpha = 0.55f
+            )
+    ) {
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = 16.dp,
+                        vertical = 13.dp
+                    ),
+            horizontalArrangement =
+                Arrangement.SpaceBetween,
+            verticalAlignment =
+                Alignment.CenterVertically
+        ) {
+            Text(
+                text =
+                    label,
+                color =
+                    MenesesTextSecondary,
+                style =
+                    MaterialTheme.typography.bodyLarge,
+                fontWeight =
+                    FontWeight.Medium
+            )
+
+            Text(
+                text =
+                    value,
+                color =
+                    if (emphasized) {
+                        MenesesGreen
+                    } else {
+                        MaterialTheme
+                            .colorScheme
+                            .onSurface
+                    },
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight =
+                    FontWeight.Bold
+            )
+        }
+    }
+}
 
 @Composable
 private fun BalanceResultCard(balanceText: String) {
