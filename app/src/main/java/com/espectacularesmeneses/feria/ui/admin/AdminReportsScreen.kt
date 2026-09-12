@@ -31,7 +31,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.espectacularesmeneses.feria.model.AdminDeviceReport
 import com.espectacularesmeneses.feria.model.AdminGameReport
+import com.espectacularesmeneses.feria.model.AdminGameDetailReport
 import com.espectacularesmeneses.feria.model.AdminRechargePointReport
+import com.espectacularesmeneses.feria.model.AdminRechargePointDetailReport
 import com.espectacularesmeneses.feria.model.AdminReportSummary
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlue
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlueSoft
@@ -81,10 +83,50 @@ fun AdminReportsScreen(
     onToday: () -> Unit,
     onLast7Days: () -> Unit,
     onApplyCustomRange: (String, String) -> Unit,
-    onViewDeviceHistory: (AdminDeviceReport) -> Unit
+    onViewDeviceHistory: (AdminDeviceReport) -> Unit,
+    selectedGameDetail: AdminGameDetailReport? = null,
+    selectedRechargePointDetail: AdminRechargePointDetailReport? = null,
+    detailLoading: Boolean = false,
+    onViewGameDetail: ((AdminGameReport) -> Unit)? = null,
+    onViewRechargePointDetail: ((AdminRechargePointReport) -> Unit)? = null,
+    onCloseGameDetail: () -> Unit = {},
+    onCloseRechargePointDetail: () -> Unit = {}
 ) {
+    if (selectedGameDetail != null) {
+        AdminGameDetailContent(
+            report = selectedGameDetail,
+            loading = detailLoading,
+            onBack = onCloseGameDetail
+        )
+        return
+    }
+
+    if (selectedRechargePointDetail != null) {
+        AdminRechargePointDetailContent(
+            report = selectedRechargePointDetail,
+            loading = detailLoading,
+            onBack = onCloseRechargePointDetail
+        )
+        return
+    }
+
     var showCustomRange by remember {
         mutableStateOf(false)
+    }
+
+    /*
+     * No inferimos el botón seleccionado únicamente a partir
+     * de from/to porque un rango personalizado también puede
+     * abarcar varios días. Conservamos explícitamente el origen
+     * del filtro elegido por el usuario.
+     */
+    var selectedPeriod by remember {
+        mutableStateOf(
+            inferReportPeriodSelection(
+                from = from,
+                to = to
+            )
+        )
     }
 
     var customFrom by remember(from) {
@@ -186,11 +228,14 @@ fun AdminReportsScreen(
                             Modifier.weight(1f),
                         text = "HOY",
                         selected =
-                            from == to &&
-                                    !showCustomRange,
+                            selectedPeriod ==
+                                    ReportPeriodSelection.TODAY,
                         enabled =
                             !loading,
                         onClick = {
+                            selectedPeriod =
+                                ReportPeriodSelection.TODAY
+
                             showCustomRange =
                                 false
 
@@ -203,11 +248,14 @@ fun AdminReportsScreen(
                             Modifier.weight(1f),
                         text = "7 DÍAS",
                         selected =
-                            from != to &&
-                                    !showCustomRange,
+                            selectedPeriod ==
+                                    ReportPeriodSelection.LAST_7_DAYS,
                         enabled =
                             !loading,
                         onClick = {
+                            selectedPeriod =
+                                ReportPeriodSelection.LAST_7_DAYS
+
                             showCustomRange =
                                 false
 
@@ -220,10 +268,14 @@ fun AdminReportsScreen(
                             Modifier.weight(1f),
                         text = "FECHA",
                         selected =
-                            showCustomRange,
+                            selectedPeriod ==
+                                    ReportPeriodSelection.CUSTOM,
                         enabled =
                             !loading,
                         onClick = {
+                            selectedPeriod =
+                                ReportPeriodSelection.CUSTOM
+
                             showCustomRange =
                                 !showCustomRange
 
@@ -365,9 +417,13 @@ fun AdminReportsScreen(
                                     customFrom <= customTo,
                         onClick = {
                             /*
-                             * Cerramos inmediatamente el selector
-                             * personalizado y luego consultamos.
+                             * Cerramos el selector, pero FECHA debe
+                             * seguir visualmente seleccionado después
+                             * de aplicar el rango.
                              */
+                            selectedPeriod =
+                                ReportPeriodSelection.CUSTOM
+
                             showCustomRange =
                                 false
 
@@ -561,7 +617,14 @@ fun AdminReportsScreen(
                 GameReportCard(
                     game = game,
                     showDailyBreakdown =
-                        from != to
+                        from != to,
+                    onViewDetail =
+                        onViewGameDetail?.let {
+                                callback ->
+                            {
+                                callback(game)
+                            }
+                        }
                 )
             }
         }
@@ -586,7 +649,14 @@ fun AdminReportsScreen(
                     rechargePoint =
                         point,
                     showDailyBreakdown =
-                        from != to
+                        from != to,
+                    onViewDetail =
+                        onViewRechargePointDetail?.let {
+                                callback ->
+                            {
+                                callback(point)
+                            }
+                        }
                 )
             }
         }
@@ -780,7 +850,8 @@ private fun AdminAmountRow(
 @Composable
 private fun GameReportCard(
     game: AdminGameReport,
-    showDailyBreakdown: Boolean
+    showDailyBreakdown: Boolean,
+    onViewDetail: (() -> Unit)? = null
 ) {
     Card(
         modifier =
@@ -836,6 +907,42 @@ private fun GameReportCard(
             )
 
             if (
+                game.cashConsumed != 0L ||
+                game.promotionalConsumed != 0L ||
+                game.adminCreditConsumed != 0L
+            ) {
+                HorizontalDivider(
+                    color =
+                        MenesesBorder
+                )
+
+                Text(
+                    text =
+                        "Composición del consumo",
+                    fontWeight =
+                        FontWeight.Bold,
+                    color =
+                        MenesesTextSecondary
+                )
+
+                Text(
+                    text =
+                        "CASH: $${game.cashConsumed}"
+                )
+
+                Text(
+                    text =
+                        "PROMOTIONAL: $${game.promotionalConsumed}"
+                )
+
+                Text(
+                    text =
+                        "ADMIN_CREDIT: $${game.adminCreditConsumed}"
+                )
+
+            }
+
+            if (
                 showDailyBreakdown &&
                 game.dailyBreakdown.isNotEmpty()
             ) {
@@ -868,6 +975,22 @@ private fun GameReportCard(
                     )
                 }
             }
+
+            if (onViewDetail != null) {
+                Button(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    onClick =
+                        onViewDetail,
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                MenesesBlue
+                        )
+                ) {
+                    Text("VER AUDITORÍA")
+                }
+            }
         }
     }
 }
@@ -877,7 +1000,8 @@ private fun GameReportCard(
 private fun RechargePointReportCard(
     rechargePoint:
     AdminRechargePointReport,
-    showDailyBreakdown: Boolean
+    showDailyBreakdown: Boolean,
+    onViewDetail: (() -> Unit)? = null
 ) {
     Card(
         modifier =
@@ -907,7 +1031,7 @@ private fun RechargePointReportCard(
 
             Text(
                 text =
-                    "$${rechargePoint.rechargedAmount}",
+                    "$${rechargePoint.cashReceived}",
                 color =
                     MenesesGreenDark,
                 fontWeight =
@@ -918,7 +1042,21 @@ private fun RechargePointReportCard(
 
             Text(
                 text =
-                    "Total recargado",
+                    "Efectivo recibido",
+                color =
+                    MenesesTextSecondary
+            )
+
+            Text(
+                text =
+                    "Promocional otorgado: $${rechargePoint.promotionalGiven}",
+                color =
+                    MenesesTextSecondary
+            )
+
+            Text(
+                text =
+                    "Crédito entregado: $${rechargePoint.creditedAmount}",
                 color =
                     MenesesTextSecondary
             )
@@ -956,6 +1094,22 @@ private fun RechargePointReportCard(
                         accent =
                             MenesesGreenDark
                     )
+                }
+            }
+
+            if (onViewDetail != null) {
+                Button(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    onClick =
+                        onViewDetail,
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor =
+                                MenesesGreenDark
+                        )
+                ) {
+                    Text("VER AUDITORÍA")
                 }
             }
         }
@@ -1219,6 +1373,328 @@ private fun ReportErrorCard(
 }
 
 
+
+@Composable
+private fun AdminGameDetailContent(
+    report: AdminGameDetailReport,
+    loading: Boolean,
+    onBack: () -> Unit
+) {
+    Column(
+        modifier =
+            Modifier.fillMaxWidth(),
+        verticalArrangement =
+            Arrangement.spacedBy(16.dp)
+    ) {
+        OutlinedButton(
+            onClick =
+                onBack
+        ) {
+            Text("← VOLVER A JUEGOS")
+        }
+
+        Text(
+            text =
+                "🎠 ${report.game.name}",
+            style =
+                MaterialTheme.typography.headlineMedium,
+            fontWeight =
+                FontWeight.Bold
+        )
+
+        Text(
+            text =
+                "${report.from} → ${report.to}",
+            color =
+                MenesesTextSecondary
+        )
+
+        if (loading) {
+            ReportStatusCard(
+                title = "Cargando auditoría...",
+                message = "Consultando operaciones del juego."
+            )
+        }
+
+        Card(
+            modifier =
+                Modifier.fillMaxWidth(),
+            shape =
+                RoundedCornerShape(20.dp),
+            colors =
+                CardDefaults.cardColors(
+                    containerColor =
+                        MenesesBlueSoft
+                )
+        ) {
+            Column(
+                modifier =
+                    Modifier.padding(18.dp),
+                verticalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Resumen financiero",
+                    fontWeight = FontWeight.Bold
+                )
+                Text("Consumo total: $${report.summary.consumptionAmount}")
+                Text("CASH: $${report.summary.cashConsumed}")
+                Text("PROMOTIONAL: $${report.summary.promotionalConsumed}")
+                Text("ADMIN_CREDIT: $${report.summary.adminCreditConsumed}")
+                Text("Personas: ${report.summary.peopleCount}")
+            }
+        }
+
+        ReportSectionTitle(
+            title = "Resumen por día"
+        )
+
+        if (report.dailyBreakdown.isEmpty()) {
+            EmptyReportCard(
+                text = "No hay operaciones confirmadas en este periodo."
+            )
+        } else {
+            report.dailyBreakdown.forEach {
+                    daily ->
+
+                Card(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(18.dp),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MenesesSurface
+                        )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier.padding(16.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text =
+                                formatReportDate(
+                                    daily.date
+                                ),
+                            style =
+                                MaterialTheme.typography.titleMedium,
+                            fontWeight =
+                                FontWeight.Bold,
+                            color =
+                                MenesesBlue
+                        )
+
+                        Text(
+                            text =
+                                "Consumo total: $${daily.consumptionAmount}",
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        HorizontalDivider(
+                            color =
+                                MenesesBorder
+                        )
+
+                        Text(
+                            text =
+                                "CASH: $${daily.cashConsumed}"
+                        )
+
+                        Text(
+                            text =
+                                "PROMOTIONAL: $${daily.promotionalConsumed}"
+                        )
+
+                        Text(
+                            text =
+                                "ADMIN_CREDIT: $${daily.adminCreditConsumed}"
+                        )
+
+                        Text(
+                            text =
+                                "Personas: ${daily.peopleCount}",
+                            color =
+                                MenesesTextSecondary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+@Composable
+private fun AdminRechargePointDetailContent(
+    report: AdminRechargePointDetailReport,
+    loading: Boolean,
+    onBack: () -> Unit
+) {
+    Column(
+        modifier =
+            Modifier.fillMaxWidth(),
+        verticalArrangement =
+            Arrangement.spacedBy(16.dp)
+    ) {
+        OutlinedButton(
+            onClick =
+                onBack
+        ) {
+            Text("← VOLVER A TAQUILLAS")
+        }
+
+        Text(
+            text =
+                "🏪 ${report.rechargePoint.name}",
+            style =
+                MaterialTheme.typography.headlineMedium,
+            fontWeight =
+                FontWeight.Bold
+        )
+
+        Text(
+            text =
+                "${report.from} → ${report.to}",
+            color =
+                MenesesTextSecondary
+        )
+
+        if (loading) {
+            ReportStatusCard(
+                title = "Cargando auditoría...",
+                message = "Consultando recargas de la taquilla."
+            )
+        }
+
+        Card(
+            modifier =
+                Modifier.fillMaxWidth(),
+            shape =
+                RoundedCornerShape(20.dp),
+            colors =
+                CardDefaults.cardColors(
+                    containerColor =
+                        MenesesGreenSoft
+                )
+        ) {
+            Column(
+                modifier =
+                    Modifier.padding(18.dp),
+                verticalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Resumen financiero",
+                    fontWeight = FontWeight.Bold
+                )
+                Text("Efectivo recibido: $${report.summary.cashReceived}")
+                Text("Promocional otorgado: $${report.summary.promotionalGiven}")
+                Text("Crédito entregado: $${report.summary.creditedAmount}")
+            }
+        }
+
+        ReportSectionTitle(
+            title = "Resumen por día"
+        )
+
+        if (report.dailyBreakdown.isEmpty()) {
+            EmptyReportCard(
+                text = "No hay recargas confirmadas en este periodo."
+            )
+        } else {
+            report.dailyBreakdown.forEach {
+                    daily ->
+
+                Card(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(18.dp),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MenesesSurface
+                        )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier.padding(16.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text =
+                                formatReportDate(
+                                    daily.date
+                                ),
+                            style =
+                                MaterialTheme.typography.titleMedium,
+                            fontWeight =
+                                FontWeight.Bold,
+                            color =
+                                MenesesGreenDark
+                        )
+
+                        Text(
+                            text =
+                                "Efectivo recibido: $${daily.cashReceived}",
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        Text(
+                            text =
+                                "Promocional otorgado: $${daily.promotionalGiven}"
+                        )
+
+                        Text(
+                            text =
+                                "Crédito entregado: $${daily.creditedAmount}"
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(
+            modifier =
+                Modifier.height(24.dp)
+        )
+    }
+}
+
+
+private enum class ReportPeriodSelection {
+    TODAY,
+    LAST_7_DAYS,
+    CUSTOM
+}
+
+
+private fun inferReportPeriodSelection(
+    from: String,
+    to: String
+): ReportPeriodSelection {
+
+    if (from == to) {
+        return ReportPeriodSelection.TODAY
+    }
+
+    /*
+     * Al entrar inicialmente a Reportes, un rango de varios días
+     * suele provenir del acceso rápido "7 DÍAS". Una vez que el
+     * usuario elige FECHA, selectedPeriod se conserva en estado y
+     * ya no depende de esta inferencia.
+     */
+    return ReportPeriodSelection.LAST_7_DAYS
+}
+
+
 private fun showDatePicker(
     context: android.content.Context,
     initialDate: String,
@@ -1408,3 +1884,4 @@ private fun formatDuration(
             "${minutes} min"
     }
 }
+

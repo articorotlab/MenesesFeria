@@ -7,6 +7,13 @@ import com.espectacularesmeneses.feria.model.CardRegistrationAuthorization
 import com.espectacularesmeneses.feria.model.ChargeAuthorization
 import com.espectacularesmeneses.feria.model.CustomerHistory
 import com.espectacularesmeneses.feria.model.CustomerHistoryItem
+import com.espectacularesmeneses.feria.model.CustomerFinancialDifferences
+import com.espectacularesmeneses.feria.model.CustomerFinancialHold
+import com.espectacularesmeneses.feria.model.CustomerFinancialIncident
+import com.espectacularesmeneses.feria.model.CustomerFinancialIncidentTransaction
+import com.espectacularesmeneses.feria.model.CustomerFinancialState
+import com.espectacularesmeneses.feria.model.CustomerLedgerState
+import com.espectacularesmeneses.feria.model.CustomerCardReturnAuthorization
 import com.espectacularesmeneses.feria.model.GameSession
 import com.espectacularesmeneses.feria.model.RechargeAuthorization
 import com.espectacularesmeneses.feria.model.RechargeSession
@@ -602,6 +609,235 @@ object MenesesApiClient {
                 "card"
             )
 
+        val financialHoldJson =
+            card.optJSONObject(
+                "financialHold"
+            )
+
+        val financialHold =
+            CustomerFinancialHold(
+                active =
+                    financialHoldJson
+                        ?.optBoolean(
+                            "active",
+                            false
+                        )
+                        ?: false,
+                reason =
+                    financialHoldJson
+                        ?.optString(
+                            "reason"
+                        )
+                        ?.takeIf {
+                            it.isNotBlank() &&
+                                    it != "null"
+                        },
+                heldAt =
+                    financialHoldJson
+                        ?.optString(
+                            "heldAt"
+                        )
+                        ?.takeIf {
+                            it.isNotBlank() &&
+                                    it != "null"
+                        }
+            )
+
+        val financialIncidents =
+            mutableListOf<CustomerFinancialIncident>()
+
+        val incidentsJson =
+            response.optJSONArray(
+                "financialIncidents"
+            )
+
+        if (
+            incidentsJson != null
+        ) {
+            for (
+            index in 0 until incidentsJson.length()
+            ) {
+                val incident =
+                    incidentsJson.getJSONObject(
+                        index
+                    )
+
+                val transaction =
+                    incident.optJSONObject(
+                        "transaction"
+                    )
+
+                val nfc =
+                    incident.getJSONObject(
+                        "nfc"
+                    )
+
+                val postgreSQL =
+                    incident.getJSONObject(
+                        "postgreSQL"
+                    )
+
+                val ledger =
+                    incident.getJSONObject(
+                        "ledger"
+                    )
+
+                val expectedBefore =
+                    incident.getJSONObject(
+                        "expectedBefore"
+                    )
+
+                val expectedAfter =
+                    incident.getJSONObject(
+                        "expectedAfter"
+                    )
+
+                val differences =
+                    incident.getJSONObject(
+                        "differences"
+                    )
+
+                financialIncidents.add(
+                    CustomerFinancialIncident(
+                        incidentId =
+                            incident.getString(
+                                "incidentId"
+                            ),
+                        type =
+                            incident.getString(
+                                "type"
+                            ),
+                        detectedAt =
+                            incident.getString(
+                                "detectedAt"
+                            ),
+                        transactionId =
+                            incident.getString(
+                                "transactionId"
+                            ),
+                        deviceCode =
+                            incident
+                                .optString(
+                                    "deviceCode"
+                                )
+                                .takeIf {
+                                    it.isNotBlank() &&
+                                            it != "null"
+                                },
+                        transaction =
+                            CustomerFinancialIncidentTransaction(
+                                type =
+                                    transaction
+                                        ?.optString(
+                                            "type"
+                                        )
+                                        ?.takeIf {
+                                            it.isNotBlank() &&
+                                                    it != "null"
+                                        },
+                                amount =
+                                    transaction
+                                        ?.takeIf {
+                                            it.has("amount") &&
+                                                    !it.isNull("amount")
+                                        }
+                                        ?.getLong(
+                                            "amount"
+                                        ),
+                                promotionId =
+                                    transaction
+                                        ?.optString(
+                                            "promotionId"
+                                        )
+                                        ?.takeIf {
+                                            it.isNotBlank() &&
+                                                    it != "null"
+                                        },
+                                statusBefore =
+                                    transaction
+                                        ?.optString(
+                                            "statusBefore"
+                                        )
+                                        ?.takeIf {
+                                            it.isNotBlank() &&
+                                                    it != "null"
+                                        }
+                            ),
+                        nfc =
+                            CustomerFinancialState(
+                                balance =
+                                    nfc.getLong(
+                                        "balance"
+                                    ),
+                                transactionCounter =
+                                    nfc.getLong(
+                                        "transactionCounter"
+                                    )
+                            ),
+                        postgreSQL =
+                            CustomerFinancialState(
+                                balance =
+                                    postgreSQL.getLong(
+                                        "balance"
+                                    ),
+                                transactionCounter =
+                                    postgreSQL.getLong(
+                                        "transactionCounter"
+                                    )
+                            ),
+                        ledger =
+                            CustomerLedgerState(
+                                balance =
+                                    ledger.getLong(
+                                        "balance"
+                                    )
+                            ),
+                        expectedBefore =
+                            CustomerFinancialState(
+                                balance =
+                                    expectedBefore.getLong(
+                                        "balance"
+                                    ),
+                                transactionCounter =
+                                    expectedBefore.getLong(
+                                        "transactionCounter"
+                                    )
+                            ),
+                        expectedAfter =
+                            CustomerFinancialState(
+                                balance =
+                                    expectedAfter.getLong(
+                                        "balance"
+                                    ),
+                                transactionCounter =
+                                    expectedAfter.getLong(
+                                        "transactionCounter"
+                                    )
+                            ),
+                        differences =
+                            CustomerFinancialDifferences(
+                                nfcVsPostgreSQL =
+                                    differences.getLong(
+                                        "nfcVsPostgreSQL"
+                                    ),
+                                nfcVsLedger =
+                                    differences.getLong(
+                                        "nfcVsLedger"
+                                    ),
+                                postgreSQLVsLedger =
+                                    differences.getLong(
+                                        "postgreSQLVsLedger"
+                                    )
+                            ),
+                        failureReason =
+                            incident.getString(
+                                "failureReason"
+                            )
+                    )
+                )
+            }
+        }
+
         val historyJson =
             response.getJSONArray(
                 "history"
@@ -776,10 +1012,352 @@ object MenesesApiClient {
                     "transactionCounter"
                 ),
 
+            financialHold =
+                financialHold,
+
+            financialIncidentsCount =
+                response.optInt(
+                    "financialIncidentsCount",
+                    financialIncidents.size
+                ),
+
+            financialIncidents =
+                financialIncidents,
+
             items =
                 items
         )
     }
+
+    /*
+     * =====================================================
+     * CUSTOMER CARD RETURN
+     * =====================================================
+     *
+     * Flujo:
+     *
+     * AUTHORIZE
+     * -> Android escribe y verifica NFC
+     * -> CONFIRM
+     *
+     * Si falla antes de comenzar la escritura NFC:
+     * -> FAIL
+     * =====================================================
+     */
+
+    fun authorizeCustomerCardReturn(
+        cardId: Long,
+        uid: String
+    ): CustomerCardReturnAuthorization {
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "idempotencyKey",
+                    UUID.randomUUID()
+                        .toString()
+                )
+
+                put(
+                    "cardId",
+                    cardId
+                )
+
+                put(
+                    "uid",
+                    uid
+                )
+
+                put(
+                    "deviceCode",
+                    DeviceRuntimeIdentity.deviceCode()
+                )
+            }
+
+
+        val response =
+            postJson(
+                path =
+                    "/customer-support/card-return/authorize",
+
+                body =
+                    body
+            )
+
+
+        if (
+            !response.optBoolean(
+                "authorized",
+                false
+            )
+        ) {
+
+            throw IllegalStateException(
+                "El servidor no autorizó la devolución."
+            )
+        }
+
+
+        val card =
+            response.getJSONObject(
+                "card"
+            )
+
+
+        val activation =
+            response.getJSONObject(
+                "activation"
+            )
+
+
+        val refundPolicy =
+            response.getJSONObject(
+                "refundPolicy"
+            )
+
+
+        val discarded =
+            response.getJSONObject(
+                "discarded"
+            )
+
+
+        val targetState =
+            response.getJSONObject(
+                "targetState"
+            )
+
+
+        return CustomerCardReturnAuthorization(
+
+            operationId =
+                response.getString(
+                    "operationId"
+                ),
+
+            cardId =
+                card.getLong(
+                    "cardId"
+                ),
+
+            uid =
+                card.getString(
+                    "uid"
+                ),
+
+            activationId =
+                card.getString(
+                    "activationId"
+                ),
+
+            balanceBefore =
+                card.getLong(
+                    "balanceBefore"
+                ),
+
+            transactionCounterBefore =
+                card.getLong(
+                    "transactionCounterBefore"
+                ),
+
+            activatedByRole =
+                activation.getString(
+                    "activatedByRole"
+                ),
+
+            activationFee =
+                activation.getLong(
+                    "activationFee"
+                ),
+
+            activationFeeKnown =
+                activation.getBoolean(
+                    "activationFeeKnown"
+                ),
+
+            refundAmount =
+                response.getLong(
+                    "refundAmount"
+                ),
+
+            shouldRefundMoney =
+                refundPolicy.getBoolean(
+                    "shouldRefundMoney"
+                ),
+
+            refundPolicyReason =
+                refundPolicy.getString(
+                    "reason"
+                ),
+
+            refundPolicyMessage =
+                refundPolicy.getString(
+                    "message"
+                ),
+
+            discardedCash =
+                discarded.getLong(
+                    "cash"
+                ),
+
+            discardedPromotional =
+                discarded.getLong(
+                    "promotional"
+                ),
+
+            discardedAdminCredit =
+                discarded.getLong(
+                    "adminCredit"
+                ),
+
+            discardedLegacy =
+                discarded.getLong(
+                    "legacy"
+                ),
+
+            discardedTotal =
+                discarded.getLong(
+                    "total"
+                ),
+
+            targetStatus =
+                targetState.getString(
+                    "status"
+                ),
+
+            targetBalance =
+                targetState.getLong(
+                    "balance"
+                ),
+
+            targetTransactionCounter =
+                targetState.getLong(
+                    "transactionCounter"
+                )
+        )
+    }
+
+
+    fun confirmCustomerCardReturn(
+        operationId: String,
+        cardId: Long,
+        uid: String,
+        writtenCardId: Long,
+        writtenCardType: String,
+        writtenStatus: String,
+        writtenBalance: Long,
+        writtenTransactionCounter: Long
+    ) {
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "operationId",
+                    operationId
+                )
+
+                put(
+                    "cardId",
+                    cardId
+                )
+
+                put(
+                    "uid",
+                    uid
+                )
+
+                put(
+                    "deviceCode",
+                    DeviceRuntimeIdentity.deviceCode()
+                )
+
+                put(
+                    "writtenCardId",
+                    writtenCardId
+                )
+
+                put(
+                    "writtenCardType",
+                    writtenCardType
+                )
+
+                put(
+                    "writtenStatus",
+                    writtenStatus
+                )
+
+                put(
+                    "writtenBalance",
+                    writtenBalance
+                )
+
+                put(
+                    "writtenTransactionCounter",
+                    writtenTransactionCounter
+                )
+            }
+
+
+        val response =
+            postJson(
+                path =
+                    "/customer-support/card-return/confirm",
+
+                body =
+                    body
+            )
+
+
+        if (
+            !response.optBoolean(
+                "confirmed",
+                false
+            )
+        ) {
+
+            throw IllegalStateException(
+                "El servidor no confirmó la devolución."
+            )
+        }
+    }
+
+
+    fun failCustomerCardReturn(
+        operationId: String,
+        reason: String
+    ) {
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "operationId",
+                    operationId
+                )
+
+                put(
+                    "deviceCode",
+                    DeviceRuntimeIdentity.deviceCode()
+                )
+
+                put(
+                    "reason",
+                    reason
+                )
+            }
+
+
+        postJson(
+            path =
+                "/customer-support/card-return/fail",
+
+            body =
+                body
+        )
+    }
+
 
     /*
      * =====================================================

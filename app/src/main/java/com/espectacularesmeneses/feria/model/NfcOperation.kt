@@ -40,6 +40,22 @@ sealed class NfcOperation {
         NfcOperation()
 
     /*
+     * Devolución / reset de una CUSTOMER desde TAQUILLA.
+     *
+     * El backend autoriza primero la devolución.
+     * Después Android escribe:
+     *
+     * - status = INACTIVE
+     * - balance = 0
+     * - transactionCounter = 0
+     *
+     * Finalmente Android relee la NFC y confirma
+     * la operación en el servidor.
+     */
+    data object ReturnCustomerCard :
+        NfcOperation()
+
+    /*
      * Recarga normal realizada por una TAQUILLA.
      */
     data class Recharge(

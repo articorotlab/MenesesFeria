@@ -9,7 +9,9 @@ package com.espectacularesmeneses.feria.model
  *
  * - resumen general;
  * - reporte por juego;
+ * - detalle/auditoría de un juego;
  * - reporte por taquilla;
+ * - detalle/auditoría de una taquilla;
  * - reporte por dispositivo;
  * - historial detallado de sesiones de un dispositivo.
  *
@@ -59,7 +61,7 @@ data class AdminReportSummary(
 
 /*
  * =========================================================
- * JUEGO
+ * JUEGOS — LISTADO
  * =========================================================
  */
 data class AdminGameReport(
@@ -80,13 +82,25 @@ data class AdminGameReport(
     val consumptionAmount: Long,
 
     /*
+     * Composición financiera del consumo.
+     */
+    val cashConsumed: Long = 0,
+    val promotionalConsumed: Long = 0,
+    val adminCreditConsumed: Long = 0,
+    val legacyConsumed: Long = 0,
+
+    /*
      * Total de personas cobradas.
      */
     val peopleCount: Long,
 
     /*
+     * Número de operaciones confirmadas.
+     */
+    val operationsCount: Long = 0,
+
+    /*
      * Desglose cronológico por día.
-     * Se usa cuando el reporte abarca más de una fecha.
      */
     val dailyBreakdown: List<AdminGameDailyReport>
 )
@@ -95,13 +109,78 @@ data class AdminGameReport(
 data class AdminGameDailyReport(
     val date: String,
     val consumptionAmount: Long,
-    val peopleCount: Long
+    val cashConsumed: Long = 0,
+    val promotionalConsumed: Long = 0,
+    val adminCreditConsumed: Long = 0,
+    val legacyConsumed: Long = 0,
+    val peopleCount: Long,
+    val operationsCount: Long = 0
 )
 
 
 /*
  * =========================================================
- * TAQUILLA
+ * JUEGO — DETALLE / AUDITORÍA
+ * =========================================================
+ */
+data class AdminGameDetailReport(
+    val from: String,
+    val to: String,
+    val timezone: String,
+    val game: AdminGameDetailHeader,
+    val summary: AdminGameDetailSummary,
+    val dailyBreakdown: List<AdminGameDailyReport>,
+    val transactions: List<AdminGameTransactionReport>
+)
+
+
+data class AdminGameDetailHeader(
+    val gameId: String,
+    val name: String,
+    val currentPrice: Long
+)
+
+
+data class AdminGameDetailSummary(
+    val consumptionAmount: Long,
+    val cashConsumed: Long,
+    val promotionalConsumed: Long,
+    val adminCreditConsumed: Long,
+    val legacyConsumed: Long,
+    val peopleCount: Long,
+    val operationsCount: Long
+)
+
+
+data class AdminGameTransactionReport(
+    val transactionId: String,
+    val cardId: Long,
+    val deviceId: String?,
+    val amount: Long,
+    val quantity: Long,
+    val unitPrice: Long?,
+    val balanceBefore: Long,
+    val balanceAfter: Long,
+    val counterBefore: Long,
+    val counterAfter: Long,
+    val status: String,
+    val createdAt: String,
+    val confirmedAt: String?,
+    val fundBreakdown: AdminGameTransactionFundBreakdown
+)
+
+
+data class AdminGameTransactionFundBreakdown(
+    val cash: Long,
+    val promotional: Long,
+    val adminCredit: Long,
+    val legacy: Long
+)
+
+
+/*
+ * =========================================================
+ * TAQUILLAS — LISTADO
  * =========================================================
  */
 data class AdminRechargePointReport(
@@ -109,20 +188,111 @@ data class AdminRechargePointReport(
     val name: String,
 
     /*
-     * Total recargado desde esta taquilla.
+     * Dinero real recibido físicamente por la taquilla.
      */
-    val rechargedAmount: Long,
+    val cashReceived: Long = 0,
 
     /*
-     * Desglose por día del total recargado.
+     * Saldo regalado mediante promociones.
      */
+    val promotionalGiven: Long = 0,
+
+    /*
+     * Total acreditado a las tarjetas.
+     *
+     * creditedAmount =
+     * cashReceived + promotionalGiven
+     */
+    val creditedAmount: Long = 0,
+
+    /*
+     * Se conserva por compatibilidad con la UI actual.
+     *
+     * Representa el total acreditado en la implementación
+     * previa del reporte Android.
+     */
+    val rechargedAmount: Long = creditedAmount,
+
+    /*
+     * Número de operaciones confirmadas.
+     */
+    val operationsCount: Long = 0,
+
     val dailyBreakdown: List<AdminRechargePointDailyReport>
 )
 
 
 data class AdminRechargePointDailyReport(
     val date: String,
-    val rechargedAmount: Long
+
+    val cashReceived: Long = 0,
+    val promotionalGiven: Long = 0,
+    val creditedAmount: Long = 0,
+
+    /*
+     * Compatibilidad con la UI actual.
+     */
+    val rechargedAmount: Long = creditedAmount,
+
+    val operationsCount: Long = 0
+)
+
+
+/*
+ * =========================================================
+ * TAQUILLA — DETALLE / AUDITORÍA
+ * =========================================================
+ */
+data class AdminRechargePointDetailReport(
+    val from: String,
+    val to: String,
+    val timezone: String,
+    val rechargePoint: AdminRechargePointDetailHeader,
+    val summary: AdminRechargePointDetailSummary,
+    val dailyBreakdown: List<AdminRechargePointDailyReport>,
+    val transactions: List<AdminRechargePointTransactionReport>
+)
+
+
+data class AdminRechargePointDetailHeader(
+    val rechargePointId: String,
+    val name: String
+)
+
+
+data class AdminRechargePointDetailSummary(
+    val cashReceived: Long,
+    val promotionalGiven: Long,
+    val creditedAmount: Long,
+    val operationsCount: Long
+)
+
+
+data class AdminRechargePointTransactionReport(
+    val transactionId: String,
+    val cardId: Long,
+    val deviceId: String?,
+    val creditedAmount: Long,
+    val cashReceived: Long,
+    val promotionalGiven: Long,
+    val adminCreditAmount: Long,
+    val balanceBefore: Long,
+    val balanceAfter: Long,
+    val counterBefore: Long,
+    val counterAfter: Long,
+    val status: String,
+    val promotion: AdminRechargePointTransactionPromotion?,
+    val createdAt: String,
+    val confirmedAt: String?
+)
+
+
+data class AdminRechargePointTransactionPromotion(
+    val promotionId: String,
+    val name: String,
+    val cashAmount: Long,
+    val promotionalAmount: Long,
+    val creditedAmount: Long
 )
 
 
@@ -198,10 +368,6 @@ data class AdminDeviceSessionReport(
 
     /*
      * Fechas recortadas al rango solicitado.
-     *
-     * Ejemplo:
-     * una sesión empezó el día anterior, pero el reporte
-     * solicita solamente el día actual.
      */
     val visibleStartedAt: String,
     val visibleEndedAt: String,

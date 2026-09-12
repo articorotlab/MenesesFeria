@@ -64,9 +64,12 @@ import androidx.compose.ui.unit.sp
 import com.espectacularesmeneses.feria.model.AdminDeviceHistory
 import com.espectacularesmeneses.feria.model.AdminDeviceReport
 import com.espectacularesmeneses.feria.model.AdminGame
+import com.espectacularesmeneses.feria.model.AdminPromotion
 import com.espectacularesmeneses.feria.model.AdminGameReport
+import com.espectacularesmeneses.feria.model.AdminGameDetailReport
 import com.espectacularesmeneses.feria.model.AdminRechargePoint
 import com.espectacularesmeneses.feria.model.AdminRechargePointReport
+import com.espectacularesmeneses.feria.model.AdminRechargePointDetailReport
 import com.espectacularesmeneses.feria.model.AdminReportSummary
 import com.espectacularesmeneses.feria.model.AdminSession
 import com.espectacularesmeneses.feria.model.CardReadResult
@@ -81,6 +84,7 @@ import com.espectacularesmeneses.feria.model.NfcOperation
 import com.espectacularesmeneses.feria.model.RechargeAuthorization
 import com.espectacularesmeneses.feria.model.RechargePromotion
 import com.espectacularesmeneses.feria.model.RechargeSession
+import com.espectacularesmeneses.feria.model.TransactionReconciliation
 import com.espectacularesmeneses.feria.network.DeviceHeartbeatApiClient
 import com.espectacularesmeneses.feria.network.GameManagementApiClient
 import com.espectacularesmeneses.feria.network.MenesesApiClient
@@ -92,6 +96,7 @@ import com.espectacularesmeneses.feria.nfc.Ntag215Reader
 import com.espectacularesmeneses.feria.nfc.Ntag215Writer
 import com.espectacularesmeneses.feria.ui.admin.AdminDeviceHistoryScreen
 import com.espectacularesmeneses.feria.ui.admin.AdminReportsScreen
+import com.espectacularesmeneses.feria.ui.admin.AdminPromotionsScreen
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlue
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlueDark
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlueSoft
@@ -119,6 +124,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+
+private class PreviousTransactionRecoveredException(
+    val reconciliation: TransactionReconciliation
+) : Exception(
+    "PREVIOUS_TRANSACTION_RECOVERED"
+)
 
 
 class MainActivity :
@@ -408,6 +420,33 @@ class MainActivity :
 
     /*
      * =====================================================
+     * ADMIN PROMOTIONS
+     * =====================================================
+     */
+
+    private var adminPromotions
+            by mutableStateOf<List<AdminPromotion>>(
+                emptyList()
+            )
+
+    private var adminPromotionsLoading
+            by mutableStateOf(
+                false
+            )
+
+    private var adminPromotionSaving
+            by mutableStateOf(
+                false
+            )
+
+    private var adminPromotionsError
+            by mutableStateOf<String?>(
+                null
+            )
+
+
+    /*
+     * =====================================================
      * ADMIN REPORTS
      * =====================================================
      */
@@ -425,6 +464,21 @@ class MainActivity :
     private var adminRechargePointReports
             by mutableStateOf<List<AdminRechargePointReport>>(
                 emptyList()
+            )
+
+    private var adminGameDetailReport
+            by mutableStateOf<AdminGameDetailReport?>(
+                null
+            )
+
+    private var adminRechargePointDetailReport
+            by mutableStateOf<AdminRechargePointDetailReport?>(
+                null
+            )
+
+    private var adminReportDetailLoading
+            by mutableStateOf(
+                false
             )
 
     private var adminDeviceReports
@@ -540,6 +594,18 @@ class MainActivity :
                     adminCardActivationFeeSaving =
                         adminCardActivationFeeSaving,
 
+                    adminPromotions =
+                        adminPromotions,
+
+                    adminPromotionsLoading =
+                        adminPromotionsLoading,
+
+                    adminPromotionSaving =
+                        adminPromotionSaving,
+
+                    adminPromotionsError =
+                        adminPromotionsError,
+
                     adminReportSummary =
                         adminReportSummary,
 
@@ -548,6 +614,15 @@ class MainActivity :
 
                     adminRechargePointReports =
                         adminRechargePointReports,
+
+                    adminGameDetailReport =
+                        adminGameDetailReport,
+
+                    adminRechargePointDetailReport =
+                        adminRechargePointDetailReport,
+
+                    adminReportDetailLoading =
+                        adminReportDetailLoading,
 
                     adminDeviceReports =
                         adminDeviceReports,
@@ -573,6 +648,32 @@ class MainActivity :
                     adminDeviceHistoryError =
                         adminDeviceHistoryError,
 
+                    onLoadAdminPromotions = {
+                        loadAdminPromotions()
+                    },
+
+                    onCreateAdminPromotion = {
+                            name,
+                            cashAmount,
+                            promotionalAmount ->
+
+                        createAdminPromotion(
+                            name = name,
+                            cashAmount = cashAmount,
+                            promotionalAmount = promotionalAmount
+                        )
+                    },
+
+                    onSetAdminPromotionActive = {
+                            promotion,
+                            active ->
+
+                        setAdminPromotionActive(
+                            promotion = promotion,
+                            active = active
+                        )
+                    },
+
                     onLoadAdminReports = {
                             from,
                             to ->
@@ -589,6 +690,26 @@ class MainActivity :
 
                     onLoadAdminReportsLast7Days = {
                         loadAdminReportsLast7Days()
+                    },
+
+                    onLoadAdminGameDetail = { gameId ->
+                        loadAdminGameDetail(
+                            gameId = gameId
+                        )
+                    },
+
+                    onLoadAdminRechargePointDetail = { rechargePointId ->
+                        loadAdminRechargePointDetail(
+                            rechargePointId = rechargePointId
+                        )
+                    },
+
+                    onClearAdminGameDetail = {
+                        adminGameDetailReport = null
+                    },
+
+                    onClearAdminRechargePointDetail = {
+                        adminRechargePointDetailReport = null
                     },
 
                     onLoadAdminDeviceHistory = {
@@ -765,6 +886,10 @@ class MainActivity :
 
                     onPrepareHistory = {
                         prepareHistoryConsultation()
+                    },
+
+                    onPrepareCardReturn = {
+                        prepareCustomerCardReturn()
                     },
 
                     onCancelOperation = {
@@ -1070,6 +1195,142 @@ class MainActivity :
 
     /*
      * =====================================================
+     * ADMIN PROMOTIONS
+     * =====================================================
+     */
+    private fun loadAdminPromotions() {
+
+        if (adminSession == null) {
+            return
+        }
+
+        runOnUiThread {
+            adminPromotionsLoading = true
+            adminPromotionsError = null
+        }
+
+        Thread {
+            try {
+                val promotions =
+                    PromotionApiClient.getAdminPromotions()
+
+                runOnUiThread {
+                    adminPromotions = promotions
+                    adminPromotionsLoading = false
+                    adminPromotionsError = null
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    adminPromotionsLoading = false
+                    adminPromotionsError =
+                        e.message ?: "No fue posible cargar las promociones."
+                }
+
+                Log.e(
+                    "MENESES_PROMOTIONS",
+                    "Error cargando promociones ADMIN: ${e.message}"
+                )
+            }
+        }.start()
+    }
+
+
+    private fun createAdminPromotion(
+        name: String,
+        cashAmount: Long,
+        promotionalAmount: Long
+    ) {
+        if (adminSession == null) {
+            return
+        }
+
+        runOnUiThread {
+            adminPromotionSaving = true
+            adminPromotionsError = null
+        }
+
+        Thread {
+            try {
+                PromotionApiClient.createAdminPromotion(
+                    name = name,
+                    cashAmount = cashAmount,
+                    promotionalAmount = promotionalAmount
+                )
+
+                val promotions =
+                    PromotionApiClient.getAdminPromotions()
+
+                runOnUiThread {
+                    adminPromotions = promotions
+                    adminPromotionSaving = false
+                    adminPromotionsError = null
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    adminPromotionSaving = false
+                    adminPromotionsError =
+                        e.message ?: "No fue posible crear la promoción."
+                }
+
+                Log.e(
+                    "MENESES_PROMOTIONS",
+                    "Error creando promoción ADMIN: ${e.message}"
+                )
+            }
+        }.start()
+    }
+
+
+    private fun setAdminPromotionActive(
+        promotion: AdminPromotion,
+        active: Boolean
+    ) {
+        if (adminSession == null) {
+            return
+        }
+
+        runOnUiThread {
+            adminPromotionSaving = true
+            adminPromotionsError = null
+        }
+
+        Thread {
+            try {
+                PromotionApiClient.setAdminPromotionActive(
+                    promotionId = promotion.id,
+                    active = active
+                )
+
+                val promotions =
+                    PromotionApiClient.getAdminPromotions()
+
+                runOnUiThread {
+                    adminPromotions = promotions
+                    adminPromotionSaving = false
+                    adminPromotionsError = null
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    adminPromotionSaving = false
+                    adminPromotionsError =
+                        e.message ?: if (active) {
+                            "No fue posible reactivar la promoción."
+                        } else {
+                            "No fue posible desactivar la promoción."
+                        }
+                }
+
+                Log.e(
+                    "MENESES_PROMOTIONS",
+                    "Error actualizando promoción ADMIN: ${e.message}"
+                )
+            }
+        }.start()
+    }
+
+
+    /*
+     * =====================================================
      * ADMIN REPORTS
      * =====================================================
      *
@@ -1110,6 +1371,12 @@ class MainActivity :
 
             adminReportsTo =
                 to
+
+            adminGameDetailReport =
+                null
+
+            adminRechargePointDetailReport =
+                null
         }
 
         Thread {
@@ -1283,6 +1550,122 @@ class MainActivity :
      * ADMIN REPORTS - DEVICE HISTORY
      * =====================================================
      */
+    private fun loadAdminGameDetail(
+        gameId: String
+    ) {
+
+        if (
+            adminSession == null ||
+            gameId.isBlank() ||
+            adminReportsFrom.isBlank() ||
+            adminReportsTo.isBlank()
+        ) {
+            return
+        }
+
+        runOnUiThread {
+            adminReportDetailLoading =
+                true
+
+            adminReportsError =
+                null
+        }
+
+        Thread {
+            try {
+                val detail =
+                    ReportsApiClient
+                        .getGameDetail(
+                            gameId = gameId,
+                            from = adminReportsFrom,
+                            to = adminReportsTo
+                        )
+
+                runOnUiThread {
+                    adminGameDetailReport =
+                        detail
+
+                    adminRechargePointDetailReport =
+                        null
+
+                    adminReportDetailLoading =
+                        false
+
+                    adminReportsError =
+                        null
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    adminReportDetailLoading =
+                        false
+
+                    adminReportsError =
+                        e.message
+                            ?: "No fue posible cargar la auditoría del juego."
+                }
+            }
+        }.start()
+    }
+
+
+    private fun loadAdminRechargePointDetail(
+        rechargePointId: String
+    ) {
+
+        if (
+            adminSession == null ||
+            rechargePointId.isBlank() ||
+            adminReportsFrom.isBlank() ||
+            adminReportsTo.isBlank()
+        ) {
+            return
+        }
+
+        runOnUiThread {
+            adminReportDetailLoading =
+                true
+
+            adminReportsError =
+                null
+        }
+
+        Thread {
+            try {
+                val detail =
+                    ReportsApiClient
+                        .getRechargePointDetail(
+                            rechargePointId = rechargePointId,
+                            from = adminReportsFrom,
+                            to = adminReportsTo
+                        )
+
+                runOnUiThread {
+                    adminRechargePointDetailReport =
+                        detail
+
+                    adminGameDetailReport =
+                        null
+
+                    adminReportDetailLoading =
+                        false
+
+                    adminReportsError =
+                        null
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    adminReportDetailLoading =
+                        false
+
+                    adminReportsError =
+                        e.message
+                            ?: "No fue posible cargar la auditoría de la taquilla."
+                }
+            }
+        }.start()
+    }
+
+
     private fun loadAdminDeviceHistory(
         deviceId: String
     ) {
@@ -1602,7 +1985,7 @@ class MainActivity :
 
                     message =
                         "NFC · LECTOR ACTIVO\n\n" +
-                                "Acerca una tarjeta NTAG215 vacía."
+                                "Acerca una NTAG215 vacía o una CUSTOMER devuelta."
                 )
     }
 
@@ -2471,6 +2854,46 @@ class MainActivity :
 
     /*
      * =====================================================
+     * CUSTOMER CARD RETURN
+     * =====================================================
+     */
+
+    private fun prepareCustomerCardReturn() {
+
+        if (
+            rechargeSession == null
+        ) {
+
+            showError(
+                "La devolución de tarjetas solamente está disponible desde TAQUILLA."
+            )
+
+            return
+        }
+
+
+        pendingOperation =
+            NfcOperation.ReturnCustomerCard
+
+
+        cardResult =
+            CardReadResult
+                .WaitingForDevCard(
+
+                    title =
+                        "Devolver tarjeta",
+
+                    message =
+                        "NFC · LECTOR ACTIVO\n\n" +
+                                "Acerca una tarjeta CUSTOMER.\n\n" +
+                                "El sistema calculará cuánto debe devolverse " +
+                                "al cliente y reseteará la tarjeta para poder reutilizarla."
+                )
+    }
+
+
+    /*
+     * =====================================================
      * RECHARGE / CHARGE
      * =====================================================
      */
@@ -2870,6 +3293,14 @@ class MainActivity :
                     )
                 }
 
+                NfcOperation.ReturnCustomerCard -> {
+
+                    returnCustomerCard(
+                        tag,
+                        uid
+                    )
+                }
+
                 is NfcOperation.Recharge -> {
 
                     rechargeCard(
@@ -3119,6 +3550,18 @@ class MainActivity :
                         uid =
                             uid
                     )
+                    .copy(
+                        /*
+                         * El backend conserva el estado autoritativo de
+                         * PostgreSQL/Ledger. La lectura NFC actual se agrega
+                         * aquí para que el diagnóstico compare las tres
+                         * fuentes sin modificar ninguna de ellas.
+                         */
+                        nfcBalance =
+                            card.balance,
+                        nfcTransactionCounter =
+                            card.transactionCounter
+                    )
 
             pendingOperation =
                 NfcOperation.Read
@@ -3334,17 +3777,84 @@ class MainActivity :
                         tag
                     )
 
+
+            /*
+             * =================================================
+             * TARJETA NUEVA O CUSTOMER DEVUELTA
+             * =================================================
+             *
+             * Permitimos:
+             *
+             * 1. NTAG215 vacía.
+             * 2. MEN1 CUSTOMER devuelta:
+             *    - INACTIVE
+             *    - balance = 0
+             *    - transactionCounter = 0
+             *
+             * El backend sigue siendo la autoridad final para
+             * decidir si esa tarjeta puede reutilizarse.
+             * =================================================
+             */
+
+            val existingMenesesCard =
+                if (
+                    MenesesCardCodec
+                        .isMenesesCard(
+                            existingData
+                        )
+                ) {
+
+                    MenesesCardCodec
+                        .decode(
+                            existingData
+                        )
+
+                } else {
+
+                    null
+                }
+
+
             if (
-                MenesesCardCodec
-                    .isMenesesCard(
-                        existingData
-                    )
+                existingMenesesCard !=
+                null
             ) {
 
-                throw IllegalStateException(
-                    "La tarjeta ya contiene una Meneses Card."
-                )
+                if (
+                    existingMenesesCard.type !=
+                    CardType.CUSTOMER
+                ) {
+
+                    throw IllegalStateException(
+                        "La tarjeta ya contiene una Meneses Card que no es CUSTOMER."
+                    )
+                }
+
+
+                if (
+                    existingMenesesCard.status !=
+                    CardStatus.INACTIVE
+                ) {
+
+                    throw IllegalStateException(
+                        "La tarjeta CUSTOMER ya está activa y no puede registrarse nuevamente."
+                    )
+                }
+
+
+                if (
+                    existingMenesesCard.balance !=
+                    0L ||
+                    existingMenesesCard.transactionCounter !=
+                    0L
+                ) {
+
+                    throw IllegalStateException(
+                        "La tarjeta CUSTOMER inactiva no está completamente reseteada."
+                    )
+                }
             }
+
 
             val authorization =
                 MenesesApiClient
@@ -4142,6 +4652,387 @@ class MainActivity :
 
     /*
      * =====================================================
+     * CUSTOMER CARD RETURN / RESET
+     * =====================================================
+     *
+     * Seguridad:
+     *
+     * 1. Lee CUSTOMER activa.
+     * 2. Backend autoriza y calcula refund/discarded.
+     * 3. Android escribe INACTIVE / 0 / 0.
+     * 4. Android relee y verifica NFC.
+     * 5. Backend confirma la devolución.
+     *
+     * Si la escritura NFC pudo haber comenzado, NO enviamos
+     * /fail automáticamente. Dejamos la operación pendiente
+     * para evitar decirle al servidor que nada ocurrió cuando
+     * la tarjeta física pudo haber cambiado.
+     * =====================================================
+     */
+
+    private fun returnCustomerCard(
+        tag: Tag,
+        uid: String
+    ) {
+
+        var operationId:
+                String? =
+            null
+
+        var cardWriteStarted =
+            false
+
+
+        try {
+
+            if (
+                rechargeSession == null
+            ) {
+
+                throw IllegalStateException(
+                    "Se necesita una sesión TAQUILLA activa."
+                )
+            }
+
+
+            val currentCard =
+                readCustomerCard(
+                    tag
+                )
+
+
+            val authorization =
+                MenesesApiClient
+                    .authorizeCustomerCardReturn(
+
+                        cardId =
+                            currentCard.cardId,
+
+                        uid =
+                            uid
+                    )
+
+
+            operationId =
+                authorization.operationId
+
+
+            validateAuthorizationBefore(
+
+                card =
+                    currentCard,
+
+                authorizedCardId =
+                    authorization.cardId,
+
+                authorizedBalance =
+                    authorization.balanceBefore,
+
+                authorizedCounter =
+                    authorization.transactionCounterBefore
+            )
+
+
+            if (
+                authorization.targetStatus !=
+                "INACTIVE" ||
+                authorization.targetBalance !=
+                0L ||
+                authorization.targetTransactionCounter !=
+                0L
+            ) {
+
+                throw IllegalStateException(
+                    "El servidor devolvió un estado final de tarjeta inesperado."
+                )
+            }
+
+
+            val returnedCard =
+                currentCard.copy(
+
+                    status =
+                        CardStatus.INACTIVE,
+
+                    balance =
+                        authorization.targetBalance,
+
+                    transactionCounter =
+                        authorization.targetTransactionCounter
+                )
+
+
+            /*
+             * Desde este punto una excepción puede significar
+             * que la NFC quedó parcial o totalmente escrita.
+             */
+            cardWriteStarted =
+                true
+
+
+            Ntag215Writer
+                .writeMenesesData(
+
+                    tag,
+
+                    MenesesCardCodec
+                        .encode(
+                            returnedCard
+                        )
+                )
+
+
+            verifyCard(
+                tag,
+                returnedCard
+            )
+
+
+            confirmCustomerCardReturnWithRetry(
+
+                operationId =
+                    authorization.operationId,
+
+                cardId =
+                    returnedCard.cardId,
+
+                uid =
+                    uid,
+
+                writtenCard =
+                    returnedCard
+            )
+
+
+            pendingOperation =
+                NfcOperation.Read
+
+
+            runOnUiThread {
+
+                cardResult =
+                    CardReadResult
+                        .Success(
+
+                            title =
+                                "Devolución completada",
+
+                            message =
+                                if (
+                                    authorization.refundPolicyReason ==
+                                    "ADMIN_CREATED"
+                                ) {
+
+                                    "NO DEVOLVER DINERO\n" +
+                                            "\$${authorization.refundAmount}\n\n" +
+                                            "Tarjeta creada por ADMIN\n\n" +
+                                            "Saldo eliminado: \$${authorization.discardedTotal}\n" +
+                                            "CASH: \$${authorization.discardedCash}\n" +
+                                            "PROMOTIONAL: \$${authorization.discardedPromotional}\n" +
+                                            "ADMIN CREDIT: \$${authorization.discardedAdminCredit}"
+
+                                } else {
+
+                                    "ENTREGAR AL CLIENTE\n" +
+                                            "\$${authorization.refundAmount}\n\n" +
+                                            "Saldo eliminado: \$${authorization.discardedTotal}\n" +
+                                            "CASH: \$${authorization.discardedCash}\n" +
+                                            "PROMOTIONAL: \$${authorization.discardedPromotional}\n" +
+                                            "ADMIN CREDIT: \$${authorization.discardedAdminCredit}"
+                                }
+                        )
+
+
+                /*
+                 * El monto de devolución permanece visible
+                 * durante un minuto.
+                 */
+                window
+                    .decorView
+                    .postDelayed(
+                        {
+
+                            val currentResult =
+                                cardResult
+
+
+                            if (
+                                pendingOperation ==
+                                NfcOperation.Read &&
+                                currentResult is
+                                        CardReadResult.Success &&
+                                currentResult.title ==
+                                "Devolución completada"
+                            ) {
+
+                                cardResult =
+                                    CardReadResult.Waiting
+                            }
+
+                        },
+                        60_000L
+                    )
+            }
+
+
+        } catch (
+            e: Exception
+        ) {
+
+            pendingOperation =
+                NfcOperation.Read
+
+
+            /*
+             * Si todavía NO comenzó la escritura NFC,
+             * podemos cancelar limpiamente la autorización.
+             */
+            if (
+                operationId != null &&
+                !cardWriteStarted
+            ) {
+
+                try {
+
+                    MenesesApiClient
+                        .failCustomerCardReturn(
+
+                            operationId =
+                                operationId,
+
+                            reason =
+                                e.message
+                                    ?: "Fallo antes de escritura NFC."
+                        )
+
+                } catch (
+                    _: Exception
+                ) {
+                }
+            }
+
+
+            /*
+             * Una vez iniciada la escritura, no afirmamos que
+             * la operación falló de forma limpia. Puede requerir
+             * revisión/reconciliación.
+             */
+            if (
+                operationId != null &&
+                cardWriteStarted
+            ) {
+
+                showError(
+                    "La tarjeta pudo haber sido modificada, " +
+                            "pero la devolución no quedó confirmada.\n\n" +
+                            "NO vuelvas a intentar la devolución.\n\n" +
+                            "Acude con un administrador.\n\n" +
+                            "Operation ID:\n$operationId"
+                )
+
+                return
+            }
+
+
+            showError(
+                e.message
+                    ?: "No fue posible devolver la tarjeta."
+            )
+        }
+    }
+
+
+    private fun confirmCustomerCardReturnWithRetry(
+        operationId: String,
+        cardId: Long,
+        uid: String,
+        writtenCard: MenesesCard
+    ) {
+
+        var lastError:
+                Exception? =
+            null
+
+
+        repeat(
+            3
+        ) { attempt ->
+
+            try {
+
+                MenesesApiClient
+                    .confirmCustomerCardReturn(
+
+                        operationId =
+                            operationId,
+
+                        cardId =
+                            cardId,
+
+                        uid =
+                            uid,
+
+                        writtenCardId =
+                            writtenCard.cardId,
+
+                        writtenCardType =
+                            "CUSTOMER",
+
+                        writtenStatus =
+                            "INACTIVE",
+
+                        writtenBalance =
+                            writtenCard.balance,
+
+                        writtenTransactionCounter =
+                            writtenCard.transactionCounter
+                    )
+
+
+                return
+
+
+            } catch (
+                e: Exception
+            ) {
+
+                lastError =
+                    e
+
+
+                if (
+                    attempt <
+                    2
+                ) {
+
+                    try {
+
+                        Thread.sleep(
+                            250L
+                        )
+
+                    } catch (
+                        _: InterruptedException
+                    ) {
+
+                        Thread
+                            .currentThread()
+                            .interrupt()
+                    }
+                }
+            }
+        }
+
+
+        throw lastError
+            ?: IllegalStateException(
+                "No fue posible confirmar la devolución."
+            )
+    }
+
+
+    /*
+     * =====================================================
      * RECHARGE
      * =====================================================
      */
@@ -4189,6 +5080,81 @@ class MainActivity :
                 authorization.balanceBefore,
                 authorization.counterBefore
             )
+
+            /*
+             * =====================================================
+             * LAB MANUAL_REVIEW_REQUIRED — SOLO CARD 18 / $50
+             * =====================================================
+             *
+             * Hook TEMPORAL. Eliminar después del test.
+             *
+             * Deja la transacción AUTHORIZED pero escribe en la NFC
+             * un tercer estado que no coincide con BEFORE ni AFTER.
+             */
+            if (
+                authorization.cardId == 18L &&
+                amount == 50L
+            ) {
+
+                val divergentCard =
+                    currentCard.copy(
+
+                        balance =
+                            authorization.balanceBefore + 20L,
+
+                        transactionCounter =
+                            authorization.counterAfter
+                    )
+
+                Ntag215Writer
+                    .writeMenesesData(
+
+                        tag,
+
+                        MenesesCardCodec
+                            .encode(
+                                divergentCard
+                            )
+                    )
+
+                cardWasWritten =
+                    true
+
+                verifyCard(
+                    tag,
+                    divergentCard
+                )
+
+                pendingOperation =
+                    NfcOperation.Read
+
+                runOnUiThread {
+
+                    cardResult =
+                        CardReadResult
+                            .Success(
+
+                                "LAB · Estado divergente creado",
+
+                                "CARD 18 · CONSERVAR EVIDENCIA\n\n" +
+                                        "BEFORE: \$${authorization.balanceBefore} / ${authorization.counterBefore}\n" +
+                                        "AFTER esperado: \$${authorization.balanceAfter} / ${authorization.counterAfter}\n" +
+                                        "NFC escrita: \$${divergentCard.balance} / ${divergentCard.transactionCounter}\n\n" +
+                                        "La transacción quedó AUTHORIZED y NO fue confirmada."
+                            )
+                }
+
+                Log.w(
+                    "MENESES_MANUAL_REVIEW_LAB",
+                    "cardId=${authorization.cardId}, " +
+                            "transactionId=${authorization.transactionId}, " +
+                            "before=${authorization.balanceBefore}/${authorization.counterBefore}, " +
+                            "after=${authorization.balanceAfter}/${authorization.counterAfter}, " +
+                            "nfc=${divergentCard.balance}/${divergentCard.transactionCounter}"
+                )
+
+                return
+            }
 
             val updatedCard =
                 currentCard.copy(
@@ -4619,14 +5585,14 @@ class MainActivity :
                 )
 
             val authorization =
-                MenesesApiClient
-                    .authorizeAdminRecharge(
-                        currentCard.cardId,
+                authorizeAdminRechargeWithRecovery(
+                    card =
+                        currentCard,
+                    uid =
                         uid,
-                        amount,
-                        currentCard.balance,
-                        currentCard.transactionCounter
-                    )
+                    amount =
+                        amount
+                )
 
             transactionId =
                 authorization.transactionId
@@ -4663,14 +5629,18 @@ class MainActivity :
                 updatedCard
             )
 
-            MenesesApiClient
-                .confirmTransaction(
+            confirmTransactionWithRetry(
+                transactionId =
                     authorization.transactionId,
+                cardId =
                     updatedCard.cardId,
+                uid =
                     uid,
+                writtenBalance =
                     updatedCard.balance,
+                writtenCounter =
                     updatedCard.transactionCounter
-                )
+            )
 
             pendingOperation =
                 NfcOperation.Read
@@ -4856,7 +5826,7 @@ class MainActivity :
     private fun reconcileCustomerCard(
         card: MenesesCard,
         uid: String
-    ) {
+    ): TransactionReconciliation {
 
         try {
 
@@ -4896,6 +5866,8 @@ class MainActivity :
                         "transactionId=${result.transactionId}"
             )
 
+            return result
+
         } catch (
             e: Exception
         ) {
@@ -4920,6 +5892,46 @@ class MainActivity :
 
             throw e
         }
+    }
+
+
+    private fun resolveInterruptedTransactionOrContinue(
+        card: MenesesCard,
+        uid: String,
+        operationLabel: String
+    ) {
+
+        val result =
+            reconcileCustomerCard(
+                card,
+                uid
+            )
+
+        if (
+            result.action ==
+            "CONFIRMED_PENDING_TRANSACTION"
+        ) {
+
+            Log.w(
+                "MENESES_RECONCILIATION",
+                "Se confirmó una operación pendiente antes de $operationLabel. " +
+                        "No se creará una segunda operación. " +
+                        "transactionId=${result.transactionId}"
+            )
+
+            throw PreviousTransactionRecoveredException(
+                result
+            )
+        }
+
+        /*
+         * FAILED_PENDING_TRANSACTION significa que la NFC seguía
+         * exactamente en BEFORE, por lo que la operación anterior
+         * nunca se escribió físicamente y es seguro intentar de nuevo.
+         *
+         * NONE significa que no había nada pendiente y el estado ya
+         * coincide con PostgreSQL.
+         */
     }
 
 
@@ -4948,6 +5960,10 @@ class MainActivity :
                 !hasServerErrorCode(
                     e,
                     "CARD_STATE_MISMATCH"
+                ) &&
+                !hasServerErrorCode(
+                    e,
+                    "CARD_HAS_PENDING_TRANSACTION"
                 )
             ) {
 
@@ -4968,9 +5984,13 @@ class MainActivity :
              * Si el segundo AUTHORIZE vuelve a fallar, el error
              * sale hacia el flujo normal y la operación se detiene.
              */
-            reconcileCustomerCard(
-                card,
-                uid
+            resolveInterruptedTransactionOrContinue(
+                card =
+                    card,
+                uid =
+                    uid,
+                operationLabel =
+                    "RECHARGE"
             )
 
             return MenesesApiClient
@@ -5020,6 +6040,10 @@ class MainActivity :
                 !hasServerErrorCode(
                     e,
                     "CARD_STATE_MISMATCH"
+                ) &&
+                !hasServerErrorCode(
+                    e,
+                    "CARD_HAS_PENDING_TRANSACTION"
                 )
             ) {
 
@@ -5044,9 +6068,13 @@ class MainActivity :
              * el error continúa por el flujo normal.
              */
 
-            reconcileCustomerCard(
-                card,
-                uid
+            resolveInterruptedTransactionOrContinue(
+                card =
+                    card,
+                uid =
+                    uid,
+                operationLabel =
+                    "PROMOTIONAL_RECHARGE"
             )
 
             return PromotionApiClient
@@ -5096,6 +6124,10 @@ class MainActivity :
                 !hasServerErrorCode(
                     e,
                     "CARD_STATE_MISMATCH"
+                ) &&
+                !hasServerErrorCode(
+                    e,
+                    "CARD_HAS_PENDING_TRANSACTION"
                 )
             ) {
 
@@ -5114,9 +6146,13 @@ class MainActivity :
             /*
              * Sólo se intenta reconciliar una vez.
              */
-            reconcileCustomerCard(
-                card,
-                uid
+            resolveInterruptedTransactionOrContinue(
+                card =
+                    card,
+                uid =
+                    uid,
+                operationLabel =
+                    "CHARGE"
             )
 
             return MenesesApiClient
@@ -5124,6 +6160,71 @@ class MainActivity :
                     card.cardId,
                     uid,
                     peopleCount,
+                    card.balance,
+                    card.transactionCounter
+                )
+        }
+    }
+
+
+    private fun authorizeAdminRechargeWithRecovery(
+        card: MenesesCard,
+        uid: String,
+        amount: Long
+    ): RechargeAuthorization {
+
+        try {
+
+            return MenesesApiClient
+                .authorizeAdminRecharge(
+                    card.cardId,
+                    uid,
+                    amount,
+                    card.balance,
+                    card.transactionCounter
+                )
+
+        } catch (
+            e: Exception
+        ) {
+
+            if (
+                !hasServerErrorCode(
+                    e,
+                    "CARD_STATE_MISMATCH"
+                ) &&
+                !hasServerErrorCode(
+                    e,
+                    "CARD_HAS_PENDING_TRANSACTION"
+                )
+            ) {
+
+                throw e
+            }
+
+            Log.w(
+                "MENESES_RECONCILIATION",
+                "Conflicto de estado en ADMIN_RECHARGE. " +
+                        "Intentando reconciliación automática. " +
+                        "cardId=${card.cardId}, " +
+                        "balance=${card.balance}, " +
+                        "counter=${card.transactionCounter}"
+            )
+
+            resolveInterruptedTransactionOrContinue(
+                card =
+                    card,
+                uid =
+                    uid,
+                operationLabel =
+                    "ADMIN_RECHARGE"
+            )
+
+            return MenesesApiClient
+                .authorizeAdminRecharge(
+                    card.cardId,
+                    uid,
+                    amount,
                     card.balance,
                     card.transactionCounter
                 )
@@ -5452,6 +6553,57 @@ class MainActivity :
             NfcOperation.Read
 
         if (
+            error is
+                    PreviousTransactionRecoveredException
+        ) {
+
+            val recovery =
+                error.reconciliation
+
+            val recoveredMessage =
+                when (operationName) {
+                    "cobro" ->
+                        "Transacción anterior recuperada exitosamente.\n\n" +
+                                "El nuevo cobro NO fue realizado.\n" +
+                                "Favor de volver a ejecutar la operación para cobrar la tarjeta.\n\n" +
+                                "Saldo actual: \$${recovery.balance}\n" +
+                                "Contador: ${recovery.transactionCounter}\n\n" +
+                                "Transaction ID: ${recovery.transactionId ?: "N/D"}"
+
+                    "recarga",
+                    "recarga promocional" ->
+                        "Transacción anterior recuperada exitosamente.\n\n" +
+                                "La nueva recarga NO fue realizada.\n" +
+                                "Favor de volver a ejecutar la operación para recargar la tarjeta.\n\n" +
+                                "Saldo actual: \$${recovery.balance}\n" +
+                                "Contador: ${recovery.transactionCounter}\n\n" +
+                                "Transaction ID: ${recovery.transactionId ?: "N/D"}"
+
+                    else ->
+                        "Transacción anterior recuperada exitosamente.\n\n" +
+                                "La nueva operación NO fue ejecutada.\n" +
+                                "Favor de volver a ejecutar la operación.\n\n" +
+                                "Saldo actual: \$${recovery.balance}\n" +
+                                "Contador: ${recovery.transactionCounter}\n\n" +
+                                "Transaction ID: ${recovery.transactionId ?: "N/D"}"
+                }
+
+            runOnUiThread {
+
+                cardResult =
+                    CardReadResult
+                        .Success(
+                            title =
+                                "Transacción anterior recuperada",
+                            message =
+                                recoveredMessage
+                        )
+            }
+
+            return
+        }
+
+        if (
             transactionId != null &&
             !cardWasWritten
         ) {
@@ -5557,6 +6709,7 @@ private enum class AdminPage {
     EDIT_GAME,
     EDIT_RECHARGE_POINT,
     CARD_PRICE,
+    PROMOTIONS,
     REPORTS,
     DEVICE_HISTORY
 }
@@ -5578,9 +6731,16 @@ fun MenesesHomeScreen(
     adminCardActivationFee: Long?,
     adminCardActivationFeeLoading: Boolean,
     adminCardActivationFeeSaving: Boolean,
+    adminPromotions: List<AdminPromotion>,
+    adminPromotionsLoading: Boolean,
+    adminPromotionSaving: Boolean,
+    adminPromotionsError: String?,
     adminReportSummary: AdminReportSummary?,
     adminGameReports: List<AdminGameReport>,
     adminRechargePointReports: List<AdminRechargePointReport>,
+    adminGameDetailReport: AdminGameDetailReport?,
+    adminRechargePointDetailReport: AdminRechargePointDetailReport?,
+    adminReportDetailLoading: Boolean,
     adminDeviceReports: List<AdminDeviceReport>,
     adminReportsLoading: Boolean,
     adminReportsError: String?,
@@ -5589,9 +6749,16 @@ fun MenesesHomeScreen(
     adminDeviceHistory: AdminDeviceHistory?,
     adminDeviceHistoryLoading: Boolean,
     adminDeviceHistoryError: String?,
+    onLoadAdminPromotions: () -> Unit,
+    onCreateAdminPromotion: (String, Long, Long) -> Unit,
+    onSetAdminPromotionActive: (AdminPromotion, Boolean) -> Unit,
     onLoadAdminReports: (String, String) -> Unit,
     onLoadAdminReportsToday: () -> Unit,
     onLoadAdminReportsLast7Days: () -> Unit,
+    onLoadAdminGameDetail: (String) -> Unit,
+    onLoadAdminRechargePointDetail: (String) -> Unit,
+    onClearAdminGameDetail: () -> Unit,
+    onClearAdminRechargePointDetail: () -> Unit,
     onLoadAdminDeviceHistory: (String) -> Unit,
     onCreateGame: (String, Long) -> Unit,
     onCreateRechargePoint: (String) -> Unit,
@@ -5618,6 +6785,7 @@ fun MenesesHomeScreen(
     onPrepareCharge: (Int) -> Unit,
     onPrepareBalance: () -> Unit,
     onPrepareHistory: () -> Unit,
+    onPrepareCardReturn: () -> Unit,
     onCancelOperation: () -> Unit,
     onLogoutGame: () -> Unit,
     onLogoutRecharge: () -> Unit,
@@ -5663,6 +6831,7 @@ fun MenesesHomeScreen(
                     cardResult.title == "Cobro realizado" ||
                             cardResult.title == "Recarga taquilla realizada" ||
                             cardResult.title == "Promoción aplicada" ||
+                            cardResult.title == "Operación anterior recuperada" ||
                             cardResult.title == "Saldo consultado" ||
                             cardResult.title == "Cliente nuevo creado"
 
@@ -5687,6 +6856,26 @@ fun MenesesHomeScreen(
     }
 
     val scroll = rememberScrollState()
+
+    /*
+     * El contenedor principal conserva su ScrollState cuando
+     * cambiamos entre el listado de reportes y una auditoría.
+     * Al abrir el detalle de un juego o taquilla queremos empezar
+     * siempre desde la parte superior de la nueva vista.
+     */
+    LaunchedEffect(
+        adminGameDetailReport?.game?.gameId,
+        adminRechargePointDetailReport
+            ?.rechargePoint
+            ?.rechargePointId
+    ) {
+        if (
+            adminGameDetailReport != null ||
+            adminRechargePointDetailReport != null
+        ) {
+            scroll.scrollTo(0)
+        }
+    }
 
     val operationArmed =
         cardResult is CardReadResult.WaitingForCharge ||
@@ -5799,6 +6988,14 @@ fun MenesesHomeScreen(
 
                             adminPage =
                                 AdminPage.HOME
+                        },
+                        onAdminPromotions = {
+                            drawerScope.launch {
+                                drawerState.close()
+                            }
+
+                            adminPage = AdminPage.PROMOTIONS
+                            onLoadAdminPromotions()
                         },
                         onAdminReports = {
                             drawerScope.launch {
@@ -5919,9 +7116,16 @@ fun MenesesHomeScreen(
                                     adminCardActivationFee = adminCardActivationFee,
                                     adminCardActivationFeeLoading = adminCardActivationFeeLoading,
                                     adminCardActivationFeeSaving = adminCardActivationFeeSaving,
+                                    adminPromotions = adminPromotions,
+                                    adminPromotionsLoading = adminPromotionsLoading,
+                                    adminPromotionSaving = adminPromotionSaving,
+                                    adminPromotionsError = adminPromotionsError,
                                     adminReportSummary = adminReportSummary,
                                     adminGameReports = adminGameReports,
                                     adminRechargePointReports = adminRechargePointReports,
+                                    adminGameDetailReport = adminGameDetailReport,
+                                    adminRechargePointDetailReport = adminRechargePointDetailReport,
+                                    adminReportDetailLoading = adminReportDetailLoading,
                                     adminDeviceReports = adminDeviceReports,
                                     adminReportsLoading = adminReportsLoading,
                                     adminReportsError = adminReportsError,
@@ -5947,9 +7151,16 @@ fun MenesesHomeScreen(
                                                 )
                                             }
                                     },
+                                    onLoadAdminPromotions = onLoadAdminPromotions,
+                                    onCreateAdminPromotion = onCreateAdminPromotion,
+                                    onSetAdminPromotionActive = onSetAdminPromotionActive,
                                     onLoadAdminReports = onLoadAdminReports,
                                     onLoadAdminReportsToday = onLoadAdminReportsToday,
                                     onLoadAdminReportsLast7Days = onLoadAdminReportsLast7Days,
+                                    onLoadAdminGameDetail = onLoadAdminGameDetail,
+                                    onLoadAdminRechargePointDetail = onLoadAdminRechargePointDetail,
+                                    onClearAdminGameDetail = onClearAdminGameDetail,
+                                    onClearAdminRechargePointDetail = onClearAdminRechargePointDetail,
                                     adminGames = adminGames,
                                     adminGamesLoading = adminGamesLoading,
                                     adminGameCreating = adminGameCreating,
@@ -6051,6 +7262,7 @@ fun MenesesHomeScreen(
                                     onPreparePromotionalRecharge = onPreparePromotionalRecharge,
                                     onPrepareBalance = onPrepareBalance,
                                     onPrepareHistory = onPrepareHistory,
+                                    onPrepareCardReturn = onPrepareCardReturn,
                                     onCreateCustomer = onCreateCustomer,
                                     onLogoutRecharge = onLogoutRecharge
                                 )
@@ -6135,6 +7347,7 @@ private fun SessionDrawerContent(
     showAdminNavigation: Boolean,
     currentAdminPage: AdminPage,
     onAdminHome: () -> Unit,
+    onAdminPromotions: () -> Unit,
     onAdminReports: () -> Unit,
     onCloseDrawer: () -> Unit,
     onLogout: () -> Unit
@@ -6217,6 +7430,9 @@ private fun SessionDrawerContent(
                     MenesesBorder
             )
 
+            val isPromotionsSelected =
+                currentAdminPage == AdminPage.PROMOTIONS
+
             val isReportsSelected =
                 currentAdminPage ==
                         AdminPage.REPORTS ||
@@ -6224,7 +7440,7 @@ private fun SessionDrawerContent(
                         AdminPage.DEVICE_HISTORY
 
             val isHomeSelected =
-                !isReportsSelected
+                !isPromotionsSelected && !isReportsSelected
 
             if (isHomeSelected) {
                 Button(
@@ -6256,6 +7472,28 @@ private fun SessionDrawerContent(
                     Text(
                         "🏠 Panel administrativo"
                     )
+                }
+            }
+
+            if (isPromotionsSelected) {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !operationArmed,
+                    onClick = onAdminPromotions,
+                    colors =
+                        ButtonDefaults.buttonColors(
+                            containerColor = MenesesPurple
+                        )
+                ) {
+                    Text("🎁 Promociones")
+                }
+            } else {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !operationArmed,
+                    onClick = onAdminPromotions
+                ) {
+                    Text("🎁 Promociones")
                 }
             }
 
@@ -6326,9 +7564,16 @@ private fun AdminDashboard(
     adminCardActivationFee: Long?,
     adminCardActivationFeeLoading: Boolean,
     adminCardActivationFeeSaving: Boolean,
+    adminPromotions: List<AdminPromotion>,
+    adminPromotionsLoading: Boolean,
+    adminPromotionSaving: Boolean,
+    adminPromotionsError: String?,
     adminReportSummary: AdminReportSummary?,
     adminGameReports: List<AdminGameReport>,
     adminRechargePointReports: List<AdminRechargePointReport>,
+    adminGameDetailReport: AdminGameDetailReport?,
+    adminRechargePointDetailReport: AdminRechargePointDetailReport?,
+    adminReportDetailLoading: Boolean,
     adminDeviceReports: List<AdminDeviceReport>,
     adminReportsLoading: Boolean,
     adminReportsError: String?,
@@ -6340,9 +7585,16 @@ private fun AdminDashboard(
     selectedReportDevice: AdminDeviceReport?,
     onSelectReportDevice: (AdminDeviceReport) -> Unit,
     onLoadAdminDeviceHistory: () -> Unit,
+    onLoadAdminPromotions: () -> Unit,
+    onCreateAdminPromotion: (String, Long, Long) -> Unit,
+    onSetAdminPromotionActive: (AdminPromotion, Boolean) -> Unit,
     onLoadAdminReports: (String, String) -> Unit,
     onLoadAdminReportsToday: () -> Unit,
     onLoadAdminReportsLast7Days: () -> Unit,
+    onLoadAdminGameDetail: (String) -> Unit,
+    onLoadAdminRechargePointDetail: (String) -> Unit,
+    onClearAdminGameDetail: () -> Unit,
+    onClearAdminRechargePointDetail: () -> Unit,
     adminGames: List<AdminGame>,
     adminGamesLoading: Boolean,
     adminGameCreating: Boolean,
@@ -6797,6 +8049,38 @@ private fun AdminDashboard(
         }
 
 
+        AdminPage.PROMOTIONS -> {
+
+            AdminPromotionsScreen(
+                promotions = adminPromotions,
+                loading = adminPromotionsLoading,
+                saving = adminPromotionSaving,
+                errorMessage = adminPromotionsError,
+                onBack = {
+                    onAdminPageChange(AdminPage.HOME)
+                },
+                onRefresh = onLoadAdminPromotions,
+                onCreatePromotion = {
+                        name,
+                        cashAmount,
+                        promotionalAmount ->
+
+                    onCreateAdminPromotion(
+                        name,
+                        cashAmount,
+                        promotionalAmount
+                    )
+                },
+                onSetPromotionActive = { promotion, active ->
+                    onSetAdminPromotionActive(
+                        promotion,
+                        active
+                    )
+                }
+            )
+        }
+
+
         AdminPage.REPORTS -> {
 
             AdminReportsScreen(
@@ -6851,7 +8135,27 @@ private fun AdminDashboard(
                     onSelectReportDevice(
                         device
                     )
-                }
+                },
+                selectedGameDetail =
+                    adminGameDetailReport,
+                selectedRechargePointDetail =
+                    adminRechargePointDetailReport,
+                detailLoading =
+                    adminReportDetailLoading,
+                onViewGameDetail = { game ->
+                    onLoadAdminGameDetail(
+                        game.gameId
+                    )
+                },
+                onViewRechargePointDetail = { rechargePoint ->
+                    onLoadAdminRechargePointDetail(
+                        rechargePoint.rechargePointId
+                    )
+                },
+                onCloseGameDetail =
+                    onClearAdminGameDetail,
+                onCloseRechargePointDetail =
+                    onClearAdminRechargePointDetail
             )
         }
 
@@ -7824,6 +9128,7 @@ private fun RechargeDashboard(
     onPreparePromotionalRecharge: (RechargePromotion) -> Unit,
     onPrepareBalance: () -> Unit,
     onPrepareHistory: () -> Unit,
+    onPrepareCardReturn: () -> Unit,
     onCreateCustomer: () -> Unit,
     onLogoutRecharge: () -> Unit
 ) {
@@ -8462,6 +9767,15 @@ private fun RechargeDashboard(
         rightAccent = MenesesBlue,
         rightEnabled = !operationArmed,
         rightOnClick = onPrepareBalance
+    )
+
+    ActionTile(
+        modifier = Modifier.fillMaxWidth(),
+        emoji = "↩️",
+        title = "Devolver / Resetear Tarjeta",
+        accent = MenesesDanger,
+        enabled = !operationArmed,
+        onClick = onPrepareCardReturn
     )
 }
 
@@ -9423,6 +10737,11 @@ private fun NfcResultArea(cardResult: CardReadResult, onCancelOperation: () -> U
                 "Cliente nuevo creado" ->
                     NewCustomerSuccessCard(cardResult.message)
 
+                "Devolución completada" ->
+                    CustomerCardReturnSuccessCard(
+                        cardResult.message
+                    )
+
                 else ->
                     StatusCard(cardResult.title, cardResult.message)
             }
@@ -9534,6 +10853,284 @@ private fun GameChargeSuccessCard(
                 color = MenesesTextSecondary,
                 style = MaterialTheme.typography.labelMedium,
                 textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun CustomerCardReturnSuccessCard(
+    description: String
+) {
+
+    val lines =
+        description
+            .lines()
+            .filter {
+                it.isNotBlank()
+            }
+
+
+    val noRefund =
+        lines.firstOrNull() ==
+                "NO DEVOLVER DINERO"
+
+
+    val actionLabel =
+        if (
+            noRefund
+        ) {
+            "NO DEVOLVER DINERO"
+        } else {
+            "ENTREGAR AL CLIENTE"
+        }
+
+
+    val refundAmount =
+        lines
+            .dropWhile {
+                it !=
+                        actionLabel
+            }
+            .drop(
+                1
+            )
+            .firstOrNull()
+            ?: ""
+
+
+    val detailLines =
+        lines
+            .filterNot {
+                it ==
+                        actionLabel ||
+                        it ==
+                        refundAmount
+            }
+
+
+    val containerColor =
+        if (
+            noRefund
+        ) {
+            MenesesOrangeSoft
+        } else {
+            MenesesGreenSoft
+        }
+
+
+    val accentColor =
+        if (
+            noRefund
+        ) {
+            MenesesOrange
+        } else {
+            MenesesGreen
+        }
+
+
+    val accentTextColor =
+        if (
+            noRefund
+        ) {
+            MenesesDanger
+        } else {
+            MenesesGreenDark
+        }
+
+
+    Card(
+        modifier =
+            Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(
+                28.dp
+            ),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    containerColor
+            )
+    ) {
+
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal =
+                            22.dp,
+                        vertical =
+                            28.dp
+                    ),
+            horizontalAlignment =
+                Alignment.CenterHorizontally,
+            verticalArrangement =
+                Arrangement.spacedBy(
+                    12.dp
+                )
+        ) {
+
+            Surface(
+                shape =
+                    RoundedCornerShape(
+                        50.dp
+                    ),
+                color =
+                    accentColor
+            ) {
+
+                Text(
+                    text =
+                        if (
+                            noRefund
+                        ) {
+                            "!"
+                        } else {
+                            "✓"
+                        },
+                    modifier =
+                        Modifier.padding(
+                            horizontal =
+                                18.dp,
+                            vertical =
+                                8.dp
+                        ),
+                    color =
+                        Color.White,
+                    fontSize =
+                        30.sp,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+            }
+
+
+            Text(
+                text =
+                    "Devolución completada",
+                color =
+                    accentTextColor,
+                style =
+                    MaterialTheme
+                        .typography
+                        .headlineMedium,
+                fontWeight =
+                    FontWeight.Bold,
+                textAlign =
+                    TextAlign.Center
+            )
+
+
+            Text(
+                text =
+                    actionLabel,
+                color =
+                    if (
+                        noRefund
+                    ) {
+                        MenesesDanger
+                    } else {
+                        MenesesTextSecondary
+                    },
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleMedium,
+                fontWeight =
+                    FontWeight.Bold,
+                textAlign =
+                    TextAlign.Center
+            )
+
+
+            Text(
+                text =
+                    refundAmount,
+                color =
+                    accentTextColor,
+                fontSize =
+                    44.sp,
+                fontWeight =
+                    FontWeight.Bold,
+                textAlign =
+                    TextAlign.Center
+            )
+
+
+            if (
+                noRefund
+            ) {
+
+                Text(
+                    text =
+                        "Esta tarjeta fue creada por ADMIN.\n" +
+                                "No entregar efectivo al cliente.",
+                    color =
+                        MenesesDanger,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .titleMedium,
+                    fontWeight =
+                        FontWeight.Bold,
+                    textAlign =
+                        TextAlign.Center
+                )
+            }
+
+
+            HorizontalDivider(
+                color =
+                    accentColor.copy(
+                        alpha =
+                            0.20f
+                    )
+            )
+
+
+            detailLines
+                .filterNot {
+                    noRefund &&
+                            it ==
+                            "Tarjeta creada por ADMIN"
+                }
+                .forEach { line ->
+
+                    Text(
+                        text =
+                            line,
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodyLarge,
+                        fontWeight =
+                            if (
+                                line.startsWith(
+                                    "Saldo eliminado:"
+                                )
+                            ) {
+                                FontWeight.Bold
+                            } else {
+                                FontWeight.Normal
+                            },
+                        textAlign =
+                            TextAlign.Center
+                    )
+                }
+
+
+            Text(
+                text =
+                    "Este mensaje permanecerá visible durante 1 minuto.",
+                color =
+                    MenesesTextSecondary,
+                style =
+                    MaterialTheme
+                        .typography
+                        .labelMedium,
+                textAlign =
+                    TextAlign.Center
             )
         }
     }
@@ -10318,6 +11915,33 @@ private fun ErrorCard(
 private fun CustomerHistoryCard(
     history: CustomerHistory
 ) {
+    val financialHoldActive =
+        history.financialHold.active
+
+    val latestIncident =
+        history.financialIncidents
+            .firstOrNull()
+
+    val currentNfcBalance =
+        history.nfcBalance
+            ?: latestIncident?.nfc?.balance
+
+    val currentNfcCounter =
+        history.nfcTransactionCounter
+            ?: latestIncident?.nfc?.transactionCounter
+
+    val ledgerBalance =
+        latestIncident?.ledger?.balance
+
+    fun signedMoneyDifference(
+        value: Long
+    ): String =
+        when {
+            value > 0 -> "+\$$value"
+            value < 0 -> "-\$${-value}"
+            else -> "\$0"
+        }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -10332,45 +11956,438 @@ private fun CustomerHistoryCard(
                 style = MaterialTheme.typography.titleLarge
             )
 
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MenesesGreenSoft)
+            if (
+                financialHoldActive
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Card(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(22.dp),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                Color(0xFFFFEEEE)
+                        )
                 ) {
-                    Text(
-                        text = "Saldo disponible",
-                        color = MenesesGreenDark,
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text =
+                                "⚠ REVISIÓN MANUAL REQUERIDA",
+                            color =
+                                MenesesError,
+                            style =
+                                MaterialTheme.typography.titleLarge,
+                            fontWeight =
+                                FontWeight.Bold
+                        )
 
-                    Text(
-                        text = "\$${history.balance}",
-                        color = MenesesGreen,
-                        fontSize = 42.sp,
-                        lineHeight = 48.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    )
+                        Text(
+                            text =
+                                "TARJETA #${history.cardId} BLOQUEADA PARA OPERACIONES FINANCIERAS",
+                            color =
+                                MenesesError,
+                            style =
+                                MaterialTheme.typography.titleMedium,
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        Text(
+                            text =
+                                "La tarjeta conserva un estado físico que no coincide con el estado financiero del sistema. No recargar, cobrar, ajustar ni devolver hasta completar la revisión.",
+                            style =
+                                MaterialTheme.typography.bodyMedium
+                        )
+
+                        history.financialHold.reason
+                            ?.takeIf {
+                                it.isNotBlank()
+                            }
+                            ?.let { reason ->
+                                Text(
+                                    text =
+                                        "Motivo: $reason",
+                                    color =
+                                        MenesesTextSecondary,
+                                    style =
+                                        MaterialTheme.typography.bodySmall
+                                )
+                            }
+
+                        history.financialHold.heldAt
+                            ?.takeIf {
+                                it.isNotBlank()
+                            }
+                            ?.let { heldAt ->
+                                Text(
+                                    text =
+                                        "Bloqueo registrado: $heldAt",
+                                    color =
+                                        MenesesTextSecondary,
+                                    style =
+                                        MaterialTheme.typography.bodySmall
+                                )
+                            }
+                    }
+                }
+
+                Card(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(22.dp),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                MenesesOrangeSoft
+                        )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text =
+                                "Diagnóstico financiero",
+                            color =
+                                MenesesDanger,
+                            style =
+                                MaterialTheme.typography.titleLarge,
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        Text(
+                            text =
+                                "Lectura realizada sin modificar NFC, PostgreSQL ni Ledger V2.",
+                            color =
+                                MenesesTextSecondary,
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+
+                        Surface(
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            shape =
+                                RoundedCornerShape(16.dp),
+                            color =
+                                Color.White.copy(
+                                    alpha = 0.72f
+                                )
+                        ) {
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text =
+                                        "NFC · ESTADO FÍSICO ACTUAL",
+                                    color =
+                                        MenesesBlueDark,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    text =
+                                        if (
+                                            currentNfcBalance != null &&
+                                            currentNfcCounter != null
+                                        ) {
+                                            "Saldo: \$$currentNfcBalance   ·   Contador: $currentNfcCounter"
+                                        } else {
+                                            "Estado NFC no disponible"
+                                        },
+                                    style =
+                                        MaterialTheme.typography.titleMedium
+                                )
+                            }
+                        }
+
+                        Surface(
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            shape =
+                                RoundedCornerShape(16.dp),
+                            color =
+                                Color.White.copy(
+                                    alpha = 0.72f
+                                )
+                        ) {
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text =
+                                        "POSTGRESQL · CARDS",
+                                    color =
+                                        MenesesPurple,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    text =
+                                        "Saldo: \$${history.balance}   ·   Contador: ${history.transactionCounter}",
+                                    style =
+                                        MaterialTheme.typography.titleMedium
+                                )
+                            }
+                        }
+
+                        Surface(
+                            modifier =
+                                Modifier.fillMaxWidth(),
+                            shape =
+                                RoundedCornerShape(16.dp),
+                            color =
+                                Color.White.copy(
+                                    alpha = 0.72f
+                                )
+                        ) {
+                            Column(
+                                modifier =
+                                    Modifier.padding(14.dp),
+                                verticalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text =
+                                        "LEDGER V2",
+                                    color =
+                                        MenesesGreenDark,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    text =
+                                        ledgerBalance
+                                            ?.let {
+                                                "Saldo: \$$it"
+                                            }
+                                            ?: "Saldo Ledger no disponible",
+                                    style =
+                                        MaterialTheme.typography.titleMedium
+                                )
+                            }
+                        }
+
+                        if (
+                            currentNfcBalance != null &&
+                            ledgerBalance != null
+                        ) {
+                            val nfcVsPostgreSQL =
+                                currentNfcBalance -
+                                        history.balance
+
+                            val nfcVsLedger =
+                                currentNfcBalance -
+                                        ledgerBalance
+
+                            val postgreSQLVsLedger =
+                                history.balance -
+                                        ledgerBalance
+
+                            HorizontalDivider()
+
+                            Text(
+                                text =
+                                    "Diferencias actuales",
+                                style =
+                                    MaterialTheme.typography.titleMedium,
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+
+                            Text(
+                                text =
+                                    "NFC − PostgreSQL: ${signedMoneyDifference(nfcVsPostgreSQL)}"
+                            )
+
+                            Text(
+                                text =
+                                    "NFC − Ledger V2: ${signedMoneyDifference(nfcVsLedger)}"
+                            )
+
+                            Text(
+                                text =
+                                    "PostgreSQL − Ledger V2: ${signedMoneyDifference(postgreSQLVsLedger)}"
+                            )
+                        }
+                    }
+                }
+
+                if (
+                    latestIncident != null
+                ) {
+                    Card(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        shape =
+                            RoundedCornerShape(22.dp),
+                        colors =
+                            CardDefaults.cardColors(
+                                containerColor =
+                                    MenesesBlueSoft
+                            )
+                    ) {
+                        Column(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(18.dp),
+                            verticalArrangement =
+                                Arrangement.spacedBy(7.dp)
+                        ) {
+                            Text(
+                                text =
+                                    "Incidente preservado",
+                                color =
+                                    MenesesBlueDark,
+                                style =
+                                    MaterialTheme.typography.titleLarge,
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+
+                            Text(
+                                text =
+                                    "Tipo: ${latestIncident.type}",
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+
+                            Text(
+                                text =
+                                    "Transacción: ${latestIncident.transaction.type ?: "N/D"}" +
+                                            (
+                                                    latestIncident.transaction.amount
+                                                        ?.let { " · \$$it" }
+                                                        ?: ""
+                                                    )
+                            )
+
+                            Text(
+                                text =
+                                    "Estado previo: ${latestIncident.transaction.statusBefore ?: "N/D"}"
+                            )
+
+                            Text(
+                                text =
+                                    "BEFORE esperado: \$${latestIncident.expectedBefore.balance} / ${latestIncident.expectedBefore.transactionCounter}"
+                            )
+
+                            Text(
+                                text =
+                                    "AFTER esperado: \$${latestIncident.expectedAfter.balance} / ${latestIncident.expectedAfter.transactionCounter}"
+                            )
+
+                            Text(
+                                text =
+                                    "NFC al detectar incidente: \$${latestIncident.nfc.balance} / ${latestIncident.nfc.transactionCounter}"
+                            )
+
+                            Text(
+                                text =
+                                    "PostgreSQL al detectar: \$${latestIncident.postgreSQL.balance} / ${latestIncident.postgreSQL.transactionCounter}"
+                            )
+
+                            Text(
+                                text =
+                                    "Ledger al detectar: \$${latestIncident.ledger.balance}"
+                            )
+
+                            HorizontalDivider()
+
+                            Text(
+                                text =
+                                    latestIncident.failureReason,
+                                color =
+                                    MenesesDanger,
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+
+                            Text(
+                                text =
+                                    "Transaction ID: ${latestIncident.transactionId}",
+                                color =
+                                    MenesesTextSecondary,
+                                style =
+                                    MaterialTheme.typography.bodySmall
+                            )
+
+                            Text(
+                                text =
+                                    "Incidentes registrados: ${history.financialIncidentsCount}",
+                                color =
+                                    MenesesTextSecondary,
+                                style =
+                                    MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            } else {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MenesesGreenSoft)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Saldo disponible",
+                            color = MenesesGreenDark,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+
+                        Text(
+                            text = "\$${history.balance}",
+                            color = MenesesGreen,
+                            fontSize = 42.sp,
+                            lineHeight = 48.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
 
             HorizontalDivider()
 
             Text(
-                text = "Movimientos",
+                text = "Movimientos confirmados",
                 style = MaterialTheme.typography.titleMedium
             )
 
             if (history.items.isEmpty()) {
                 Text(
-                    text = "Esta tarjeta no tiene movimientos.",
+                    text = "Esta tarjeta no tiene movimientos confirmados.",
                     color = MenesesTextSecondary
                 )
             } else {

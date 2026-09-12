@@ -1,7 +1,6 @@
 package com.espectacularesmeneses.feria.network
 
 import com.espectacularesmeneses.feria.device.DeviceRuntimeIdentity
-
 import com.espectacularesmeneses.feria.model.AdminDeviceHistory
 import com.espectacularesmeneses.feria.model.AdminDeviceReport
 import com.espectacularesmeneses.feria.model.AdminDeviceReportHeader
@@ -11,9 +10,19 @@ import com.espectacularesmeneses.feria.model.AdminDeviceSessionMetrics
 import com.espectacularesmeneses.feria.model.AdminDeviceSessionRechargePoint
 import com.espectacularesmeneses.feria.model.AdminDeviceSessionReport
 import com.espectacularesmeneses.feria.model.AdminGameDailyReport
+import com.espectacularesmeneses.feria.model.AdminGameDetailHeader
+import com.espectacularesmeneses.feria.model.AdminGameDetailReport
+import com.espectacularesmeneses.feria.model.AdminGameDetailSummary
 import com.espectacularesmeneses.feria.model.AdminGameReport
+import com.espectacularesmeneses.feria.model.AdminGameTransactionFundBreakdown
+import com.espectacularesmeneses.feria.model.AdminGameTransactionReport
 import com.espectacularesmeneses.feria.model.AdminRechargePointDailyReport
+import com.espectacularesmeneses.feria.model.AdminRechargePointDetailHeader
+import com.espectacularesmeneses.feria.model.AdminRechargePointDetailReport
+import com.espectacularesmeneses.feria.model.AdminRechargePointDetailSummary
 import com.espectacularesmeneses.feria.model.AdminRechargePointReport
+import com.espectacularesmeneses.feria.model.AdminRechargePointTransactionPromotion
+import com.espectacularesmeneses.feria.model.AdminRechargePointTransactionReport
 import com.espectacularesmeneses.feria.model.AdminReportSummary
 import com.espectacularesmeneses.feria.util.ServerConfig
 import org.json.JSONObject
@@ -56,13 +65,33 @@ object ReportsApiClient {
                 "summary"
             )
 
+        /*
+         * Financial Ledger V2 devuelve el resumen
+         * agrupado por dominio:
+         *
+         * summary.rechargePoints
+         * summary.games
+         * summary.admin
+         *
+         * AdminReportSummary conserva por ahora los
+         * campos que ya consume la UI existente.
+         */
+        val rechargePoints =
+            summary.getJSONObject(
+                "rechargePoints"
+            )
+
+        val games =
+            summary.getJSONObject(
+                "games"
+            )
+
         val admin =
             summary.getJSONObject(
                 "admin"
             )
 
         return AdminReportSummary(
-
             from =
                 json.getString(
                     "from"
@@ -78,19 +107,29 @@ object ReportsApiClient {
                     "timezone"
                 ),
 
+            /*
+             * La UI histórica llama a este campo
+             * rechargePointAmount.
+             *
+             * En Financial Ledger V2 corresponde al
+             * crédito TOTAL entregado por taquillas.
+             *
+             * Más adelante la UI puede mostrar además
+             * CASH y PROMOTIONAL por separado.
+             */
             rechargePointAmount =
-                summary.getLong(
-                    "rechargePointAmount"
+                rechargePoints.getLong(
+                    "creditedAmount"
                 ),
 
             gameConsumptionAmount =
-                summary.getLong(
-                    "gameConsumptionAmount"
+                games.getLong(
+                    "consumptionAmount"
                 ),
 
             gamePeopleCount =
-                summary.getLong(
-                    "gamePeopleCount"
+                games.getLong(
+                    "peopleCount"
                 ),
 
             adminRechargeAmount =
@@ -108,7 +147,7 @@ object ReportsApiClient {
 
     /*
      * =====================================================
-     * JUEGOS
+     * JUEGOS — LISTADO
      * =====================================================
      *
      * GET /admin/reports/games
@@ -176,7 +215,6 @@ object ReportsApiClient {
 
                     dailyBreakdown.add(
                         AdminGameDailyReport(
-
                             date =
                                 daily.getString(
                                     "date"
@@ -187,9 +225,39 @@ object ReportsApiClient {
                                     "consumptionAmount"
                                 ),
 
+                            cashConsumed =
+                                daily.optLong(
+                                    "cashConsumed",
+                                    0L
+                                ),
+
+                            promotionalConsumed =
+                                daily.optLong(
+                                    "promotionalConsumed",
+                                    0L
+                                ),
+
+                            adminCreditConsumed =
+                                daily.optLong(
+                                    "adminCreditConsumed",
+                                    0L
+                                ),
+
+                            legacyConsumed =
+                                daily.optLong(
+                                    "legacyConsumed",
+                                    0L
+                                ),
+
                             peopleCount =
                                 daily.getLong(
                                     "peopleCount"
+                                ),
+
+                            operationsCount =
+                                daily.optLong(
+                                    "operationsCount",
+                                    0L
                                 )
                         )
                     )
@@ -198,7 +266,6 @@ object ReportsApiClient {
 
             result.add(
                 AdminGameReport(
-
                     gameId =
                         item.getString(
                             "gameId"
@@ -219,9 +286,39 @@ object ReportsApiClient {
                             "consumptionAmount"
                         ),
 
+                    cashConsumed =
+                        item.optLong(
+                            "cashConsumed",
+                            0L
+                        ),
+
+                    promotionalConsumed =
+                        item.optLong(
+                            "promotionalConsumed",
+                            0L
+                        ),
+
+                    adminCreditConsumed =
+                        item.optLong(
+                            "adminCreditConsumed",
+                            0L
+                        ),
+
+                    legacyConsumed =
+                        item.optLong(
+                            "legacyConsumed",
+                            0L
+                        ),
+
                     peopleCount =
                         item.getLong(
                             "peopleCount"
+                        ),
+
+                    operationsCount =
+                        item.optLong(
+                            "operationsCount",
+                            0L
                         ),
 
                     dailyBreakdown =
@@ -236,7 +333,318 @@ object ReportsApiClient {
 
     /*
      * =====================================================
-     * TAQUILLAS
+     * JUEGO — DETALLE / AUDITORÍA
+     * =====================================================
+     *
+     * GET /admin/reports/games/:gameId
+     * =====================================================
+     */
+    fun getGameDetail(
+        gameId: String,
+        from: String,
+        to: String
+    ): AdminGameDetailReport {
+
+        if (
+            gameId.isBlank()
+        ) {
+            throw IllegalArgumentException(
+                "El juego no tiene un ID válido."
+            )
+        }
+
+        validateDateRange(
+            from = from,
+            to = to
+        )
+
+        val json =
+            getJson(
+                path =
+                    "/admin/reports/games/" +
+                            encode(
+                                gameId.trim()
+                            ) +
+                            reportQuery(
+                                from = from,
+                                to = to
+                            )
+            )
+
+        val gameJson =
+            json.getJSONObject(
+                "game"
+            )
+
+        val summaryJson =
+            json.getJSONObject(
+                "summary"
+            )
+
+        val dailyItems =
+            json.getJSONArray(
+                "dailyBreakdown"
+            )
+
+        val dailyBreakdown =
+            mutableListOf<AdminGameDailyReport>()
+
+        for (
+        index in 0 until dailyItems.length()
+        ) {
+
+            val daily =
+                dailyItems.getJSONObject(
+                    index
+                )
+
+            dailyBreakdown.add(
+                AdminGameDailyReport(
+                    date =
+                        daily.getString(
+                            "date"
+                        ),
+
+                    consumptionAmount =
+                        daily.getLong(
+                            "consumptionAmount"
+                        ),
+
+                    cashConsumed =
+                        daily.getLong(
+                            "cashConsumed"
+                        ),
+
+                    promotionalConsumed =
+                        daily.getLong(
+                            "promotionalConsumed"
+                        ),
+
+                    adminCreditConsumed =
+                        daily.getLong(
+                            "adminCreditConsumed"
+                        ),
+
+                    legacyConsumed =
+                        daily.getLong(
+                            "legacyConsumed"
+                        ),
+
+                    peopleCount =
+                        daily.getLong(
+                            "peopleCount"
+                        ),
+
+                    operationsCount =
+                        daily.getLong(
+                            "operationsCount"
+                        )
+                )
+            )
+        }
+
+        val transactionItems =
+            json.getJSONArray(
+                "transactions"
+            )
+
+        val transactions =
+            mutableListOf<AdminGameTransactionReport>()
+
+        for (
+        index in 0 until transactionItems.length()
+        ) {
+
+            val item =
+                transactionItems.getJSONObject(
+                    index
+                )
+
+            val funds =
+                item.getJSONObject(
+                    "fundBreakdown"
+                )
+
+            transactions.add(
+                AdminGameTransactionReport(
+                    transactionId =
+                        item.getString(
+                            "transactionId"
+                        ),
+
+                    cardId =
+                        item.getLong(
+                            "cardId"
+                        ),
+
+                    deviceId =
+                        optionalString(
+                            item,
+                            "deviceId"
+                        ),
+
+                    amount =
+                        item.getLong(
+                            "amount"
+                        ),
+
+                    quantity =
+                        item.getLong(
+                            "quantity"
+                        ),
+
+                    unitPrice =
+                        optionalLong(
+                            item,
+                            "unitPrice"
+                        ),
+
+                    balanceBefore =
+                        item.getLong(
+                            "balanceBefore"
+                        ),
+
+                    balanceAfter =
+                        item.getLong(
+                            "balanceAfter"
+                        ),
+
+                    counterBefore =
+                        item.getLong(
+                            "counterBefore"
+                        ),
+
+                    counterAfter =
+                        item.getLong(
+                            "counterAfter"
+                        ),
+
+                    status =
+                        item.getString(
+                            "status"
+                        ),
+
+                    createdAt =
+                        item.getString(
+                            "createdAt"
+                        ),
+
+                    confirmedAt =
+                        optionalString(
+                            item,
+                            "confirmedAt"
+                        ),
+
+                    fundBreakdown =
+                        AdminGameTransactionFundBreakdown(
+                            cash =
+                                funds.getLong(
+                                    "cash"
+                                ),
+
+                            promotional =
+                                funds.getLong(
+                                    "promotional"
+                                ),
+
+                            adminCredit =
+                                funds.getLong(
+                                    "adminCredit"
+                                ),
+
+                            legacy =
+                                funds.getLong(
+                                    "legacy"
+                                )
+                        )
+                )
+            )
+        }
+
+        return AdminGameDetailReport(
+            from =
+                json.getString(
+                    "from"
+                ),
+
+            to =
+                json.getString(
+                    "to"
+                ),
+
+            timezone =
+                json.getString(
+                    "timezone"
+                ),
+
+            game =
+                AdminGameDetailHeader(
+                    gameId =
+                        gameJson.getString(
+                            "gameId"
+                        ),
+
+                    name =
+                        gameJson.getString(
+                            "name"
+                        ),
+
+                    currentPrice =
+                        gameJson.getLong(
+                            "currentPrice"
+                        )
+                ),
+
+            summary =
+                AdminGameDetailSummary(
+                    consumptionAmount =
+                        summaryJson.getLong(
+                            "consumptionAmount"
+                        ),
+
+                    cashConsumed =
+                        summaryJson.getLong(
+                            "cashConsumed"
+                        ),
+
+                    promotionalConsumed =
+                        summaryJson.getLong(
+                            "promotionalConsumed"
+                        ),
+
+                    adminCreditConsumed =
+                        summaryJson.getLong(
+                            "adminCreditConsumed"
+                        ),
+
+                    legacyConsumed =
+                        summaryJson.getLong(
+                            "legacyConsumed"
+                        ),
+
+                    peopleCount =
+                        summaryJson.getLong(
+                            "peopleCount"
+                        ),
+
+                    operationsCount =
+                        summaryJson.getLong(
+                            "operationsCount"
+                        )
+                ),
+
+            dailyBreakdown =
+                dailyBreakdown,
+
+            transactions =
+                transactions
+        )
+    }
+
+
+    /*
+     * =====================================================
+     * TAQUILLAS — LISTADO
      * =====================================================
      *
      * GET /admin/reports/recharge-points
@@ -302,26 +710,61 @@ object ReportsApiClient {
                                 dailyIndex
                             )
 
+                    val dailyCreditedAmount =
+                        daily.optLong(
+                            "creditedAmount",
+                            daily.optLong(
+                                "rechargedAmount",
+                                0L
+                            )
+                        )
+
                     dailyBreakdown.add(
                         AdminRechargePointDailyReport(
-
                             date =
                                 daily.getString(
                                     "date"
                                 ),
 
+                            cashReceived =
+                                daily.optLong(
+                                    "cashReceived",
+                                    dailyCreditedAmount
+                                ),
+
+                            promotionalGiven =
+                                daily.optLong(
+                                    "promotionalGiven",
+                                    0L
+                                ),
+
+                            creditedAmount =
+                                dailyCreditedAmount,
+
                             rechargedAmount =
-                                daily.getLong(
-                                    "rechargedAmount"
+                                dailyCreditedAmount,
+
+                            operationsCount =
+                                daily.optLong(
+                                    "operationsCount",
+                                    0L
                                 )
                         )
                     )
                 }
             }
 
+            val creditedAmount =
+                item.optLong(
+                    "creditedAmount",
+                    item.optLong(
+                        "rechargedAmount",
+                        0L
+                    )
+                )
+
             result.add(
                 AdminRechargePointReport(
-
                     rechargePointId =
                         item.getString(
                             "rechargePointId"
@@ -332,9 +775,28 @@ object ReportsApiClient {
                             "name"
                         ),
 
+                    cashReceived =
+                        item.optLong(
+                            "cashReceived",
+                            creditedAmount
+                        ),
+
+                    promotionalGiven =
+                        item.optLong(
+                            "promotionalGiven",
+                            0L
+                        ),
+
+                    creditedAmount =
+                        creditedAmount,
+
                     rechargedAmount =
-                        item.getLong(
-                            "rechargedAmount"
+                        creditedAmount,
+
+                    operationsCount =
+                        item.optLong(
+                            "operationsCount",
+                            0L
                         ),
 
                     dailyBreakdown =
@@ -344,6 +806,314 @@ object ReportsApiClient {
         }
 
         return result
+    }
+
+
+    /*
+     * =====================================================
+     * TAQUILLA — DETALLE / AUDITORÍA
+     * =====================================================
+     *
+     * GET /admin/reports/recharge-points/:rechargePointId
+     * =====================================================
+     */
+    fun getRechargePointDetail(
+        rechargePointId: String,
+        from: String,
+        to: String
+    ): AdminRechargePointDetailReport {
+
+        if (
+            rechargePointId.isBlank()
+        ) {
+            throw IllegalArgumentException(
+                "La taquilla no tiene un ID válido."
+            )
+        }
+
+        validateDateRange(
+            from = from,
+            to = to
+        )
+
+        val json =
+            getJson(
+                path =
+                    "/admin/reports/recharge-points/" +
+                            encode(
+                                rechargePointId.trim()
+                            ) +
+                            reportQuery(
+                                from = from,
+                                to = to
+                            )
+            )
+
+        val rechargePointJson =
+            json.getJSONObject(
+                "rechargePoint"
+            )
+
+        val summaryJson =
+            json.getJSONObject(
+                "summary"
+            )
+
+        val dailyItems =
+            json.getJSONArray(
+                "dailyBreakdown"
+            )
+
+        val dailyBreakdown =
+            mutableListOf<AdminRechargePointDailyReport>()
+
+        for (
+        index in 0 until dailyItems.length()
+        ) {
+
+            val daily =
+                dailyItems.getJSONObject(
+                    index
+                )
+
+            val credited =
+                daily.getLong(
+                    "creditedAmount"
+                )
+
+            dailyBreakdown.add(
+                AdminRechargePointDailyReport(
+                    date =
+                        daily.getString(
+                            "date"
+                        ),
+
+                    cashReceived =
+                        daily.getLong(
+                            "cashReceived"
+                        ),
+
+                    promotionalGiven =
+                        daily.getLong(
+                            "promotionalGiven"
+                        ),
+
+                    creditedAmount =
+                        credited,
+
+                    rechargedAmount =
+                        credited,
+
+                    operationsCount =
+                        daily.getLong(
+                            "operationsCount"
+                        )
+                )
+            )
+        }
+
+        val transactionItems =
+            json.getJSONArray(
+                "transactions"
+            )
+
+        val transactions =
+            mutableListOf<AdminRechargePointTransactionReport>()
+
+        for (
+        index in 0 until transactionItems.length()
+        ) {
+
+            val item =
+                transactionItems.getJSONObject(
+                    index
+                )
+
+            val promotion =
+                if (
+                    item.has(
+                        "promotion"
+                    ) &&
+                    !item.isNull(
+                        "promotion"
+                    )
+                ) {
+
+                    val promotionJson =
+                        item.getJSONObject(
+                            "promotion"
+                        )
+
+                    AdminRechargePointTransactionPromotion(
+                        promotionId =
+                            promotionJson.getString(
+                                "promotionId"
+                            ),
+
+                        name =
+                            promotionJson.getString(
+                                "name"
+                            ),
+
+                        cashAmount =
+                            promotionJson.getLong(
+                                "cashAmount"
+                            ),
+
+                        promotionalAmount =
+                            promotionJson.getLong(
+                                "promotionalAmount"
+                            ),
+
+                        creditedAmount =
+                            promotionJson.getLong(
+                                "creditedAmount"
+                            )
+                    )
+
+                } else {
+
+                    null
+                }
+
+            transactions.add(
+                AdminRechargePointTransactionReport(
+                    transactionId =
+                        item.getString(
+                            "transactionId"
+                        ),
+
+                    cardId =
+                        item.getLong(
+                            "cardId"
+                        ),
+
+                    deviceId =
+                        optionalString(
+                            item,
+                            "deviceId"
+                        ),
+
+                    creditedAmount =
+                        item.getLong(
+                            "creditedAmount"
+                        ),
+
+                    cashReceived =
+                        item.getLong(
+                            "cashReceived"
+                        ),
+
+                    promotionalGiven =
+                        item.getLong(
+                            "promotionalGiven"
+                        ),
+
+                    adminCreditAmount =
+                        item.getLong(
+                            "adminCreditAmount"
+                        ),
+
+                    balanceBefore =
+                        item.getLong(
+                            "balanceBefore"
+                        ),
+
+                    balanceAfter =
+                        item.getLong(
+                            "balanceAfter"
+                        ),
+
+                    counterBefore =
+                        item.getLong(
+                            "counterBefore"
+                        ),
+
+                    counterAfter =
+                        item.getLong(
+                            "counterAfter"
+                        ),
+
+                    status =
+                        item.getString(
+                            "status"
+                        ),
+
+                    promotion =
+                        promotion,
+
+                    createdAt =
+                        item.getString(
+                            "createdAt"
+                        ),
+
+                    confirmedAt =
+                        optionalString(
+                            item,
+                            "confirmedAt"
+                        )
+                )
+            )
+        }
+
+        return AdminRechargePointDetailReport(
+            from =
+                json.getString(
+                    "from"
+                ),
+
+            to =
+                json.getString(
+                    "to"
+                ),
+
+            timezone =
+                json.getString(
+                    "timezone"
+                ),
+
+            rechargePoint =
+                AdminRechargePointDetailHeader(
+                    rechargePointId =
+                        rechargePointJson.getString(
+                            "rechargePointId"
+                        ),
+
+                    name =
+                        rechargePointJson.getString(
+                            "name"
+                        )
+                ),
+
+            summary =
+                AdminRechargePointDetailSummary(
+                    cashReceived =
+                        summaryJson.getLong(
+                            "cashReceived"
+                        ),
+
+                    promotionalGiven =
+                        summaryJson.getLong(
+                            "promotionalGiven"
+                        ),
+
+                    creditedAmount =
+                        summaryJson.getLong(
+                            "creditedAmount"
+                        ),
+
+                    operationsCount =
+                        summaryJson.getLong(
+                            "operationsCount"
+                        )
+                ),
+
+            dailyBreakdown =
+                dailyBreakdown,
+
+            transactions =
+                transactions
+        )
     }
 
 
@@ -394,7 +1164,6 @@ object ReportsApiClient {
 
             result.add(
                 AdminDeviceReport(
-
                     deviceId =
                         item.getString(
                             "deviceId"
@@ -505,7 +1274,6 @@ object ReportsApiClient {
                         )
 
                     AdminDeviceSessionGame(
-
                         gameId =
                             gameJson.getString(
                                 "gameId"
@@ -538,7 +1306,6 @@ object ReportsApiClient {
                         )
 
                     AdminDeviceSessionRechargePoint(
-
                         rechargePointId =
                             rechargeJson.getString(
                                 "rechargePointId"
@@ -567,7 +1334,6 @@ object ReportsApiClient {
                         )
 
                     AdminDeviceSessionAdmin(
-
                         cardId =
                             if (
                                 adminJson.has(
@@ -597,7 +1363,6 @@ object ReportsApiClient {
 
             sessions.add(
                 AdminDeviceSessionReport(
-
                     sessionId =
                         item.getString(
                             "sessionId"
@@ -650,7 +1415,6 @@ object ReportsApiClient {
 
                     metrics =
                         AdminDeviceSessionMetrics(
-
                             gameConsumptionAmount =
                                 metricsJson.getLong(
                                     "gameConsumptionAmount"
@@ -681,7 +1445,6 @@ object ReportsApiClient {
         }
 
         return AdminDeviceHistory(
-
             from =
                 json.getString(
                     "from"
@@ -699,7 +1462,6 @@ object ReportsApiClient {
 
             device =
                 AdminDeviceReportHeader(
-
                     deviceId =
                         device.getString(
                             "deviceId"
@@ -755,12 +1517,6 @@ object ReportsApiClient {
     /*
      * =====================================================
      * VALIDACIÓN DE FECHAS
-     * =====================================================
-     *
-     * No intentamos interpretar la zona horaria aquí.
-     * El servidor es quien aplica America/Mexico_City.
-     *
-     * Android solamente manda YYYY-MM-DD.
      * =====================================================
      */
     private fun validateDateRange(
@@ -873,10 +1629,6 @@ object ReportsApiClient {
                 requestMethod =
                     method
 
-                /*
-                 * Reportes pueden ser un poco más pesados
-                 * que las operaciones NFC normales.
-                 */
                 connectTimeout =
                     5_000
 
@@ -982,5 +1734,23 @@ object ReportsApiClient {
                 it.isNotBlank() &&
                         it != "null"
             }
+    }
+
+
+    private fun optionalLong(
+        json: JSONObject,
+        key: String
+    ): Long? {
+
+        if (
+            !json.has(key) ||
+            json.isNull(key)
+        ) {
+            return null
+        }
+
+        return json.getLong(
+            key
+        )
     }
 }
