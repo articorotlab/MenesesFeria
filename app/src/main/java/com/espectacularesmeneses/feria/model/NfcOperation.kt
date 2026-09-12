@@ -56,10 +56,25 @@ sealed class NfcOperation {
         NfcOperation()
 
     /*
-     * Recarga normal realizada por una TAQUILLA.
+     * Recarga normal legacy realizada por una TAQUILLA.
+     * Se conserva temporalmente mientras migramos las rutas
+     * promocionales y cualquier recuperación anterior.
      */
     data class Recharge(
         val amount: Long
+    ) :
+        NfcOperation()
+
+    /*
+     * Recarga normal mediante recharge_checkout.
+     *
+     * paymentMethod:
+     * - CASH = efectivo
+     * - CARD = tarjeta bancaria
+     */
+    data class CheckoutRecharge(
+        val amount: Long,
+        val paymentMethod: String
     ) :
         NfcOperation()
 

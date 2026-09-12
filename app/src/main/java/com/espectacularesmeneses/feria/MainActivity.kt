@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -90,6 +91,7 @@ import com.espectacularesmeneses.feria.network.GameManagementApiClient
 import com.espectacularesmeneses.feria.network.MenesesApiClient
 import com.espectacularesmeneses.feria.network.PromotionApiClient
 import com.espectacularesmeneses.feria.network.RechargeManagementApiClient
+import com.espectacularesmeneses.feria.network.RechargeCheckoutApiClient
 import com.espectacularesmeneses.feria.network.ReportsApiClient
 import com.espectacularesmeneses.feria.nfc.MenesesCardCodec
 import com.espectacularesmeneses.feria.nfc.Ntag215Reader
@@ -841,6 +843,16 @@ class MainActivity :
 
                         prepareRecharge(
                             amount
+                        )
+                    },
+
+                    onPrepareCheckoutRecharge = {
+                            amount,
+                            paymentMethod ->
+
+                        prepareCheckoutRecharge(
+                            amount = amount,
+                            paymentMethod = paymentMethod
                         )
                     },
 
@@ -2942,6 +2954,49 @@ class MainActivity :
     }
 
 
+    private fun prepareCheckoutRecharge(
+        amount: Long,
+        paymentMethod: RechargeCheckoutApiClient.PaymentMethod
+    ) {
+
+        val session =
+            rechargeSession
+                ?: run {
+
+                    showError(
+                        "No existe una sesión RECHARGE activa."
+                    )
+
+                    return
+                }
+
+        if (
+            amount <= 0
+        ) {
+
+            showError(
+                "Selecciona un monto válido."
+            )
+
+            return
+        }
+
+        pendingOperation =
+            NfcOperation.CheckoutRecharge(
+                amount = amount,
+                paymentMethod = paymentMethod.name
+            )
+
+        cardResult =
+            CardReadResult
+                .WaitingForRecharge(
+                    amount = amount,
+                    rechargePointName =
+                        session.rechargePointName
+                )
+    }
+
+
     private fun preparePromotionalRecharge(
         promotion: RechargePromotion
     ) {
@@ -3308,6 +3363,15 @@ class MainActivity :
                         tag,
                         uid,
                         operation.amount
+                    )
+                }
+
+                is NfcOperation.CheckoutRecharge -> {
+
+                    checkoutRechargeCard(
+                        tag = tag,
+                        uid = uid,
+                        operation = operation
                     )
                 }
 
@@ -5033,6 +5097,638 @@ class MainActivity :
 
     /*
      * =====================================================
+     * RECHARGE CHECKOUT (NEW / EXISTING / RESUME)
+     * =====================================================
+     *
+     * Flujo seguro:
+     * 1. RESUME por UID antes de crear otra operación.
+     * 2. Si no hay checkout abierto, PREPARE clasifica NEW/EXISTING.
+     * 3. AUTHORIZE devuelve el estado NFC final esperado.
+     * 4. Android sólo escribe si la NFC está en un estado permitido.
+     * 5. Relee y verifica físicamente.
+     * 6. CONFIRM materializa el movimiento financiero.
+     *
+     * Si la NFC no coincide con BEFORE ni AFTER, NO se escribe.
+     * =====================================================
+     */
+
+    private data class CheckoutExecution(
+        val checkout: RechargeCheckoutApiClient.Checkout,
+        val beforeCardState: RechargeCheckoutApiClient.CardState?,
+        val finalCardState: RechargeCheckoutApiClient.CardState
+    )
+
+
+    private fun checkoutRechargeCard(
+        tag: Tag,
+        uid: String,
+        operation: NfcOperation.CheckoutRecharge
+    ) {
+
+        var finalStateReached =
+            false
+
+        try {
+
+            val paymentMethod =
+                try {
+                    RechargeCheckoutApiClient
+                        .PaymentMethod
+                        .valueOf(
+                            operation.paymentMethod
+                                .trim()
+                                .uppercase()
+                        )
+                } catch (
+                    _: Exception
+                ) {
+                    throw IllegalArgumentException(
+                        "Método de pago inválido."
+                    )
+                }
+
+            val normalizedUid =
+                uid
+                    .trim()
+                    .uppercase()
+
+            val rawData =
+                Ntag215Reader
+                    .readMenesesData(
+                        tag
+                    )
+
+            val physicalCard =
+                if (
+                    MenesesCardCodec
+                        .isMenesesCard(
+                            rawData
+                        )
+                ) {
+                    MenesesCardCodec
+                        .decode(
+                            rawData
+                        )
+                } else {
+                    null
+                }
+
+            val resume =
+                RechargeCheckoutApiClient
+                    .resume(
+                        targetUid =
+                            normalizedUid
+                    )
+
+            val execution =
+                if (
+                    resume.found
+                ) {
+                    resumeCheckoutExecution(
+                        resume = resume,
+                        physicalCard = physicalCard,
+                        paymentMethod = paymentMethod,
+                        targetUid = normalizedUid
+                    )
+                } else {
+                    prepareAndAuthorizeCheckoutExecution(
+                        physicalCard = physicalCard,
+                        paymentMethod = paymentMethod,
+                        amount = operation.amount,
+                        targetUid = normalizedUid
+                    )
+                }
+
+            val expectedFinalCard =
+                checkoutStateToMenesesCard(
+                    state =
+                        execution.finalCardState,
+                    version =
+                        physicalCard?.version
+                            ?: 1
+                )
+
+            val physicalAlreadyFinal =
+                physicalCard != null &&
+                        checkoutCardMatchesState(
+                            card = physicalCard,
+                            state = execution.finalCardState
+                        )
+
+            if (
+                !physicalAlreadyFinal
+            ) {
+
+                when (
+                    execution.checkout.cardPath
+                ) {
+                    "NEW" -> {
+                        if (
+                            physicalCard != null
+                        ) {
+                            throw IllegalStateException(
+                                "La tarjeta ya contiene datos distintos al estado autorizado. " +
+                                        "NO se modificó la NFC."
+                            )
+                        }
+                    }
+
+                    "EXISTING" -> {
+                        val before =
+                            execution.beforeCardState
+                                ?: throw IllegalStateException(
+                                    "El checkout EXISTING no contiene estado BEFORE."
+                                )
+
+                        if (
+                            physicalCard == null ||
+                            !checkoutCardMatchesState(
+                                card = physicalCard,
+                                state = before
+                            )
+                        ) {
+                            throw IllegalStateException(
+                                "MANUAL_REVIEW_REQUIRED: la NFC no coincide con BEFORE ni AFTER. " +
+                                        "NO se modificó la tarjeta."
+                            )
+                        }
+                    }
+
+                    else ->
+                        throw IllegalStateException(
+                            "Este tipo de tarjeta todavía no puede procesarse automáticamente: " +
+                                    execution.checkout.cardPath
+                        )
+                }
+
+                Ntag215Writer
+                    .writeMenesesData(
+                        tag,
+                        MenesesCardCodec
+                            .encode(
+                                expectedFinalCard
+                            )
+                    )
+            }
+
+            verifyCard(
+                tag,
+                expectedFinalCard
+            )
+
+            finalStateReached =
+                true
+
+            val confirmation =
+                RechargeCheckoutApiClient
+                    .confirm(
+                        checkoutId =
+                            execution.checkout.checkoutId,
+                        targetUid =
+                            normalizedUid,
+                        cardId =
+                            expectedFinalCard.cardId,
+                        writtenBalance =
+                            expectedFinalCard.balance,
+                        writtenCounter =
+                            expectedFinalCard.transactionCounter
+                    )
+
+            pendingOperation =
+                NfcOperation.Read
+
+            val totalDue =
+                confirmation.checkout
+                    .amounts
+                    .totalDue
+
+            val activationFee =
+                confirmation.checkout
+                    .amounts
+                    .activationFee
+
+            val paymentLabel =
+                when (
+                    confirmation.checkout
+                        .paymentMethod
+                ) {
+                    "CARD" -> "Tarjeta"
+                    else -> "Efectivo"
+                }
+
+            runOnUiThread {
+
+                cardResult =
+                    CardReadResult
+                        .Success(
+                            "Recarga taquilla realizada",
+                            buildString {
+                                append(
+                                    "Saldo registrado exitosamente: \$${confirmation.card.balance}"
+                                )
+                                append(
+                                    "\nCobrar al cliente: \$$totalDue"
+                                )
+                                if (
+                                    activationFee > 0
+                                ) {
+                                    append(
+                                        "\nIncluye activación de tarjeta: \$$activationFee"
+                                    )
+                                }
+                                append(
+                                    "\nMétodo de pago: $paymentLabel"
+                                )
+
+                            }
+                        )
+            }
+
+        } catch (
+            e: Exception
+        ) {
+
+            if (
+                finalStateReached
+            ) {
+                /*
+                 * La NFC ya fue verificada en AFTER, pero CONFIRM pudo
+                 * fallar por red/reinicio. Conservamos la operación armada
+                 * para que el cajero acerque LA MISMA tarjeta y RESUME
+                 * finalice el checkout sin volver a cobrar ni adivinar.
+                 */
+                runOnUiThread {
+                    cardResult =
+                        CardReadResult
+                            .WaitingForDevCard(
+                                title =
+                                    "Recarga pendiente de confirmar",
+                                message =
+                                    "La tarjeta ya alcanzó el estado autorizado, " +
+                                            "pero falta confirmar con el servidor.\n\n" +
+                                            "NO uses otra tarjeta.\n" +
+                                            "Vuelve a acercar esta misma NFC."
+                            )
+                }
+
+                return
+            }
+
+            pendingOperation =
+                NfcOperation.Read
+
+            showError(
+                e.message
+                    ?: "No fue posible completar la recarga."
+            )
+        }
+    }
+
+
+    private fun resumeCheckoutExecution(
+        resume: RechargeCheckoutApiClient.ResumeResult,
+        physicalCard: MenesesCard?,
+        paymentMethod: RechargeCheckoutApiClient.PaymentMethod,
+        targetUid: String
+    ): CheckoutExecution {
+
+        val checkout =
+            resume.checkout
+                ?: throw IllegalStateException(
+                    "El servidor reportó un checkout abierto sin detalle."
+                )
+
+        val checkoutPaymentMethod =
+            checkout.paymentMethod
+                ?.trim()
+                ?.uppercase()
+
+        if (
+            checkoutPaymentMethod != null &&
+            checkoutPaymentMethod !=
+            paymentMethod.name
+        ) {
+            throw IllegalStateException(
+                "Existe una recarga pendiente con método de pago " +
+                        if (checkoutPaymentMethod == "CARD") {
+                            "Tarjeta."
+                        } else {
+                            "Efectivo."
+                        }
+            )
+        }
+
+        return when (
+            resume.state
+                .trim()
+                .uppercase()
+        ) {
+            "MANUAL_REVIEW_REQUIRED" ->
+                throw IllegalStateException(
+                    "MANUAL_REVIEW_REQUIRED: conserva la tarjeta y revisa el incidente antes de continuar."
+                )
+
+            "IN_PROGRESS" -> {
+                val finalState =
+                    resume.finalCardState
+                        ?: throw IllegalStateException(
+                            "El checkout pendiente no contiene estado AFTER."
+                        )
+
+                if (
+                    checkout.cardPath == "NEW"
+                ) {
+                    if (
+                        physicalCard != null &&
+                        !checkoutCardMatchesState(
+                            card = physicalCard,
+                            state = finalState
+                        )
+                    ) {
+                        throw IllegalStateException(
+                            "MANUAL_REVIEW_REQUIRED: la tarjeta NEW pendiente contiene un estado inesperado."
+                        )
+                    }
+                } else if (
+                    checkout.cardPath == "EXISTING"
+                ) {
+                    val before =
+                        resume.beforeCardState
+                            ?: throw IllegalStateException(
+                                "El checkout EXISTING pendiente no contiene BEFORE."
+                            )
+
+                    if (
+                        physicalCard == null ||
+                        (
+                                !checkoutCardMatchesState(
+                                    card = physicalCard,
+                                    state = before
+                                ) &&
+                                        !checkoutCardMatchesState(
+                                            card = physicalCard,
+                                            state = finalState
+                                        )
+                                )
+                    ) {
+                        throw IllegalStateException(
+                            "MANUAL_REVIEW_REQUIRED: la NFC no coincide con BEFORE ni AFTER."
+                        )
+                    }
+                }
+
+                CheckoutExecution(
+                    checkout = checkout,
+                    beforeCardState =
+                        resume.beforeCardState,
+                    finalCardState =
+                        finalState
+                )
+            }
+
+            "PREPARED" -> {
+                val authorization =
+                    when (
+                        checkout.cardPath
+                    ) {
+                        "NEW" -> {
+                            if (
+                                physicalCard != null
+                            ) {
+                                throw IllegalStateException(
+                                    "La tarjeta ya no está virgen. NO se modificó."
+                                )
+                            }
+
+                            RechargeCheckoutApiClient
+                                .authorizeNew(
+                                    checkoutId =
+                                        checkout.checkoutId,
+                                    targetUid =
+                                        targetUid
+                                )
+                        }
+
+                        "EXISTING" -> {
+                            val card =
+                                requireActiveCustomerForCheckout(
+                                    physicalCard
+                                )
+
+                            RechargeCheckoutApiClient
+                                .authorizeExisting(
+                                    checkoutId =
+                                        checkout.checkoutId,
+                                    targetUid =
+                                        targetUid,
+                                    cardBalance =
+                                        card.balance,
+                                    cardCounter =
+                                        card.transactionCounter
+                                )
+                        }
+
+                        else ->
+                            throw IllegalStateException(
+                                "Este tipo de tarjeta todavía no puede procesarse automáticamente: " +
+                                        checkout.cardPath
+                            )
+                    }
+
+                CheckoutExecution(
+                    checkout =
+                        authorization.checkout,
+                    beforeCardState =
+                        authorization.beforeCardState,
+                    finalCardState =
+                        authorization.finalCardState
+                )
+            }
+
+            else ->
+                throw IllegalStateException(
+                    "Estado de checkout no soportado: ${resume.state}"
+                )
+        }
+    }
+
+
+    private fun prepareAndAuthorizeCheckoutExecution(
+        physicalCard: MenesesCard?,
+        paymentMethod: RechargeCheckoutApiClient.PaymentMethod,
+        amount: Long,
+        targetUid: String
+    ): CheckoutExecution {
+
+        if (
+            physicalCard != null
+        ) {
+            requireActiveCustomerForCheckout(
+                physicalCard
+            )
+        }
+
+        val prepared =
+            RechargeCheckoutApiClient
+                .prepare(
+                    targetUid =
+                        targetUid,
+                    amount =
+                        amount,
+                    paymentMethod =
+                        paymentMethod
+                )
+
+        val authorization =
+            when (
+                prepared.checkout.cardPath
+            ) {
+                "NEW" -> {
+                    if (
+                        physicalCard != null
+                    ) {
+                        throw IllegalStateException(
+                            "El servidor clasificó NEW pero la NFC ya contiene una Meneses Card."
+                        )
+                    }
+
+                    RechargeCheckoutApiClient
+                        .authorizeNew(
+                            checkoutId =
+                                prepared.checkout.checkoutId,
+                            targetUid =
+                                targetUid
+                        )
+                }
+
+                "EXISTING" -> {
+                    val card =
+                        requireActiveCustomerForCheckout(
+                            physicalCard
+                        )
+
+                    RechargeCheckoutApiClient
+                        .authorizeExisting(
+                            checkoutId =
+                                prepared.checkout.checkoutId,
+                            targetUid =
+                                targetUid,
+                            cardBalance =
+                                card.balance,
+                            cardCounter =
+                                card.transactionCounter
+                        )
+                }
+
+                else ->
+                    throw IllegalStateException(
+                        "La tarjeta está registrada, pero no es elegible para recarga automática (${prepared.checkout.cardPath})."
+                    )
+            }
+
+        return CheckoutExecution(
+            checkout =
+                authorization.checkout,
+            beforeCardState =
+                authorization.beforeCardState,
+            finalCardState =
+                authorization.finalCardState
+        )
+    }
+
+
+    private fun requireActiveCustomerForCheckout(
+        card: MenesesCard?
+    ): MenesesCard {
+
+        val existing =
+            card
+                ?: throw IllegalArgumentException(
+                    "La tarjeta registrada no pudo leerse como CUSTOMER."
+                )
+
+        if (
+            existing.type !=
+            CardType.CUSTOMER
+        ) {
+            throw IllegalArgumentException(
+                "La tarjeta no es CUSTOMER."
+            )
+        }
+
+        if (
+            existing.status !=
+            CardStatus.ACTIVE
+        ) {
+            throw IllegalArgumentException(
+                "La tarjeta CUSTOMER no está activa."
+            )
+        }
+
+        return existing
+    }
+
+
+    private fun checkoutStateToMenesesCard(
+        state: RechargeCheckoutApiClient.CardState,
+        version: Int
+    ): MenesesCard {
+
+        if (
+            !state.cardType.equals(
+                "CUSTOMER",
+                ignoreCase = true
+            ) ||
+            !state.status.equals(
+                "ACTIVE",
+                ignoreCase = true
+            )
+        ) {
+            throw IllegalStateException(
+                "El servidor devolvió un estado NFC no válido para CUSTOMER."
+            )
+        }
+
+        return MenesesCard(
+            version = version,
+            type = CardType.CUSTOMER,
+            status = CardStatus.ACTIVE,
+            cardId = state.cardId,
+            balance = state.balance,
+            transactionCounter =
+                state.transactionCounter
+        )
+    }
+
+
+    private fun checkoutCardMatchesState(
+        card: MenesesCard,
+        state: RechargeCheckoutApiClient.CardState
+    ): Boolean {
+
+        return card.cardId ==
+                state.cardId &&
+                card.type ==
+                CardType.CUSTOMER &&
+                card.status ==
+                CardStatus.ACTIVE &&
+                state.cardType.equals(
+                    "CUSTOMER",
+                    ignoreCase = true
+                ) &&
+                state.status.equals(
+                    "ACTIVE",
+                    ignoreCase = true
+                ) &&
+                card.balance ==
+                state.balance &&
+                card.transactionCounter ==
+                state.transactionCounter
+    }
+
+
+    /*
+     * =====================================================
      * RECHARGE
      * =====================================================
      */
@@ -5080,81 +5776,6 @@ class MainActivity :
                 authorization.balanceBefore,
                 authorization.counterBefore
             )
-
-            /*
-             * =====================================================
-             * LAB MANUAL_REVIEW_REQUIRED — SOLO CARD 18 / $50
-             * =====================================================
-             *
-             * Hook TEMPORAL. Eliminar después del test.
-             *
-             * Deja la transacción AUTHORIZED pero escribe en la NFC
-             * un tercer estado que no coincide con BEFORE ni AFTER.
-             */
-            if (
-                authorization.cardId == 18L &&
-                amount == 50L
-            ) {
-
-                val divergentCard =
-                    currentCard.copy(
-
-                        balance =
-                            authorization.balanceBefore + 20L,
-
-                        transactionCounter =
-                            authorization.counterAfter
-                    )
-
-                Ntag215Writer
-                    .writeMenesesData(
-
-                        tag,
-
-                        MenesesCardCodec
-                            .encode(
-                                divergentCard
-                            )
-                    )
-
-                cardWasWritten =
-                    true
-
-                verifyCard(
-                    tag,
-                    divergentCard
-                )
-
-                pendingOperation =
-                    NfcOperation.Read
-
-                runOnUiThread {
-
-                    cardResult =
-                        CardReadResult
-                            .Success(
-
-                                "LAB · Estado divergente creado",
-
-                                "CARD 18 · CONSERVAR EVIDENCIA\n\n" +
-                                        "BEFORE: \$${authorization.balanceBefore} / ${authorization.counterBefore}\n" +
-                                        "AFTER esperado: \$${authorization.balanceAfter} / ${authorization.counterAfter}\n" +
-                                        "NFC escrita: \$${divergentCard.balance} / ${divergentCard.transactionCounter}\n\n" +
-                                        "La transacción quedó AUTHORIZED y NO fue confirmada."
-                            )
-                }
-
-                Log.w(
-                    "MENESES_MANUAL_REVIEW_LAB",
-                    "cardId=${authorization.cardId}, " +
-                            "transactionId=${authorization.transactionId}, " +
-                            "before=${authorization.balanceBefore}/${authorization.counterBefore}, " +
-                            "after=${authorization.balanceAfter}/${authorization.counterAfter}, " +
-                            "nfc=${divergentCard.balance}/${divergentCard.transactionCounter}"
-                )
-
-                return
-            }
 
             val updatedCard =
                 currentCard.copy(
@@ -6778,6 +7399,7 @@ fun MenesesHomeScreen(
     onPrepareRechargePointCard: (AdminRechargePoint) -> Unit,
     onRefreshRechargePoints: () -> Unit,
     onPrepareRecharge: (Long) -> Unit,
+    onPrepareCheckoutRecharge: (Long, RechargeCheckoutApiClient.PaymentMethod) -> Unit,
     onPreparePromotionalRecharge: (RechargePromotion) -> Unit,
     onPrepareAdminRecharge: (Long) -> Unit,
     onPrepareAdminAdjustment: (Long) -> Unit,
@@ -7259,6 +7881,7 @@ fun MenesesHomeScreen(
                                     },
                                     operationArmed = operationArmed,
                                     onPrepareRecharge = onPrepareRecharge,
+                                    onPrepareCheckoutRecharge = onPrepareCheckoutRecharge,
                                     onPreparePromotionalRecharge = onPreparePromotionalRecharge,
                                     onPrepareBalance = onPrepareBalance,
                                     onPrepareHistory = onPrepareHistory,
@@ -8343,15 +8966,6 @@ private fun AdminHome(
 
     ActionTile(
         modifier = Modifier.fillMaxWidth(),
-        emoji = "👤",
-        title = "Crear Nuevo Cliente",
-        accent = MenesesBlue,
-        enabled = !operationArmed,
-        onClick = onCreateCustomer
-    )
-
-    ActionTile(
-        modifier = Modifier.fillMaxWidth(),
         emoji = "💰",
         title =
             when {
@@ -9125,6 +9739,7 @@ private fun RechargeDashboard(
     onCustomAmountTextChange: (String) -> Unit,
     operationArmed: Boolean,
     onPrepareRecharge: (Long) -> Unit,
+    onPrepareCheckoutRecharge: (Long, RechargeCheckoutApiClient.PaymentMethod) -> Unit,
     onPreparePromotionalRecharge: (RechargePromotion) -> Unit,
     onPrepareBalance: () -> Unit,
     onPrepareHistory: () -> Unit,
@@ -9132,6 +9747,15 @@ private fun RechargeDashboard(
     onCreateCustomer: () -> Unit,
     onLogoutRecharge: () -> Unit
 ) {
+    var paymentMethodAmount
+            by remember(
+                rechargeSession.sessionId
+            ) {
+                mutableStateOf<Long?>(
+                    null
+                )
+            }
+
     /*
      * =====================================================
      * PROMOTIONS UI STATE
@@ -9251,6 +9875,193 @@ private fun RechargeDashboard(
      * PROMOTIONS PAGE
      * =====================================================
      */
+
+
+    /*
+     * =====================================================
+     * PAYMENT METHOD SCREEN
+     * =====================================================
+     *
+     * Al iniciar una recarga normal, el método de pago se
+     * solicita en una pantalla independiente y completamente
+     * blanca antes de armar la lectura NFC.
+     * =====================================================
+     */
+    if (
+        paymentMethodAmount != null &&
+        !operationArmed
+    ) {
+        val amount =
+            paymentMethodAmount ?: 0L
+
+        Surface(
+            modifier =
+                Modifier.fillMaxSize(),
+            color =
+                Color.White
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                contentAlignment =
+                    Alignment.Center
+            ) {
+                Column(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = 520.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(18.dp),
+                    horizontalAlignment =
+                        Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "Método de pago",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .headlineMedium,
+                        fontWeight =
+                            FontWeight.Bold,
+                        color =
+                            MaterialTheme.colorScheme.onBackground
+                    )
+
+                    Text(
+                        "¿Cómo pagó el cliente?",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleLarge,
+                        color =
+                            MaterialTheme.colorScheme.onBackground
+                    )
+
+                    Text(
+                        "Recarga: \$$amount",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .headlineSmall,
+                        fontWeight =
+                            FontWeight.SemiBold,
+                        color =
+                            MenesesGreen
+                    )
+
+                    Text(
+                        "Selecciona el método de pago antes de acercar la tarjeta NFC.",
+                        color =
+                            MenesesTextSecondary,
+                        textAlign =
+                            TextAlign.Center
+                    )
+
+                    Button(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .height(60.dp),
+                        onClick = {
+                            paymentMethodAmount =
+                                null
+
+                            onPrepareCheckoutRecharge(
+                                amount,
+                                RechargeCheckoutApiClient
+                                    .PaymentMethod
+                                    .CASH
+                            )
+                        },
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor =
+                                    MenesesGreen
+                            ),
+                        shape =
+                            RoundedCornerShape(18.dp)
+                    ) {
+                        Text(
+                            "💵  Efectivo",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium
+                        )
+                    }
+
+                    Button(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .height(60.dp),
+                        onClick = {
+                            paymentMethodAmount =
+                                null
+
+                            onPrepareCheckoutRecharge(
+                                amount,
+                                RechargeCheckoutApiClient
+                                    .PaymentMethod
+                                    .CARD
+                            )
+                        },
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor =
+                                    MenesesBlue
+                            ),
+                        shape =
+                            RoundedCornerShape(18.dp)
+                    ) {
+                        Text(
+                            "💳  Tarjeta",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium
+                        )
+                    }
+
+                    Spacer(
+                        modifier =
+                            Modifier.height(22.dp)
+                    )
+
+                    Button(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                        onClick = {
+                            paymentMethodAmount =
+                                null
+                        },
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor =
+                                    MenesesDanger
+                            ),
+                        shape =
+                            RoundedCornerShape(18.dp)
+                    ) {
+                        Text(
+                            "✕  Cancelar",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium
+                        )
+                    }
+                }
+            }
+        }
+
+        return
+    }
 
     if (
         showPromotions
@@ -9702,8 +10513,12 @@ private fun RechargeDashboard(
     PrimaryGreenButton(
         text = selectedRechargeAmount?.let { "💳  Realizar recarga  \$$it" } ?: "💳  Realizar recarga",
         enabled = !operationArmed && (selectedRechargeAmount ?: 0) > 0,
-        onClick = { selectedRechargeAmount?.let(onPrepareRecharge) }
+        onClick = {
+            paymentMethodAmount =
+                selectedRechargeAmount
+        }
     )
+
 
     /*
      * Las promociones son una ruta adicional.
@@ -9746,15 +10561,6 @@ private fun RechargeDashboard(
     }
 
     SectionTitle("Atención al cliente")
-
-    ActionTile(
-        modifier = Modifier.fillMaxWidth(),
-        emoji = "👤",
-        title = "Crear Nuevo Cliente",
-        accent = MenesesBlue,
-        enabled = !operationArmed,
-        onClick = onCreateCustomer
-    )
 
     ActionGridRow(
         leftEmoji = "🧾",
@@ -11147,6 +11953,13 @@ private fun RechargeSuccessCard(
                 it.isNotBlank()
             }
 
+    val isCheckoutSuccess =
+        lines.any {
+            it.startsWith(
+                "Cobrar al cliente:"
+            )
+        }
+
     Card(
         modifier =
             Modifier.fillMaxWidth(),
@@ -11225,45 +12038,141 @@ private fun RechargeSuccessCard(
                         "Saldo nuevo:"
                     )
 
-                Text(
-                    text =
-                        line,
-                    color =
-                        when {
-                            isRecharge ||
-                                    isNewBalance ->
-                                MenesesGreenDark
+                val isRegisteredBalance =
+                    line.startsWith(
+                        "Saldo registrado exitosamente:"
+                    )
 
-                            else ->
-                                MaterialTheme
-                                    .colorScheme
-                                    .onSurface
-                        },
-                    style =
-                        when {
-                            isRecharge ||
-                                    isNewBalance ->
-                                MaterialTheme
-                                    .typography
-                                    .titleLarge
+                val isAmountToCharge =
+                    line.startsWith(
+                        "Cobrar al cliente:"
+                    )
 
-                            else ->
-                                MaterialTheme
-                                    .typography
-                                    .bodyLarge
-                        },
-                    fontWeight =
-                        if (
-                            isRecharge ||
-                            isNewBalance
+                if (
+                    isCheckoutSuccess &&
+                    isAmountToCharge
+                ) {
+                    val amountToCharge =
+                        line
+                            .substringAfter(
+                                "Cobrar al cliente:"
+                            )
+                            .trim()
+
+                    Spacer(
+                        modifier =
+                            Modifier.height(6.dp)
+                    )
+
+                    Surface(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        shape =
+                            RoundedCornerShape(22.dp),
+                        color =
+                            MenesesBlue.copy(
+                                alpha = 0.08f
+                            )
+                    ) {
+                        Column(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        horizontal = 18.dp,
+                                        vertical = 18.dp
+                                    ),
+                            horizontalAlignment =
+                                Alignment.CenterHorizontally,
+                            verticalArrangement =
+                                Arrangement.spacedBy(4.dp)
                         ) {
-                            FontWeight.Bold
-                        } else {
-                            FontWeight.Medium
-                        },
-                    textAlign =
-                        TextAlign.Center
-                )
+                            Text(
+                                text =
+                                    "Cobrar al cliente",
+                                color =
+                                    MaterialTheme
+                                        .colorScheme
+                                        .onSurface,
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .titleMedium,
+                                fontWeight =
+                                    FontWeight.SemiBold,
+                                textAlign =
+                                    TextAlign.Center
+                            )
+
+                            Text(
+                                text =
+                                    amountToCharge,
+                                color =
+                                    MenesesBlue,
+                                fontSize =
+                                    42.sp,
+                                fontWeight =
+                                    FontWeight.Bold,
+                                textAlign =
+                                    TextAlign.Center
+                            )
+                        }
+                    }
+
+                    Spacer(
+                        modifier =
+                            Modifier.height(6.dp)
+                    )
+
+                } else {
+
+                    Text(
+                        text =
+                            line,
+                        color =
+                            when {
+                                isRecharge ||
+                                        isNewBalance ||
+                                        isRegisteredBalance ->
+                                    MenesesGreenDark
+
+                                else ->
+                                    MaterialTheme
+                                        .colorScheme
+                                        .onSurface
+                            },
+                        style =
+                            when {
+                                isRecharge ||
+                                        isNewBalance ->
+                                    MaterialTheme
+                                        .typography
+                                        .titleLarge
+
+                                isRegisteredBalance ->
+                                    MaterialTheme
+                                        .typography
+                                        .titleMedium
+
+                                else ->
+                                    MaterialTheme
+                                        .typography
+                                        .bodyLarge
+                            },
+                        fontWeight =
+                            if (
+                                isRecharge ||
+                                isNewBalance ||
+                                isRegisteredBalance
+                            ) {
+                                FontWeight.Bold
+                            } else {
+                                FontWeight.Medium
+                            },
+                        textAlign =
+                            TextAlign.Center
+                    )
+                }
             }
 
             Text(
@@ -12601,3 +13510,4 @@ private fun formatServerDate(value: String): String {
         timeZone = TimeZone.getTimeZone("America/Mexico_City")
     }.format(parsedDate)
 }
+
