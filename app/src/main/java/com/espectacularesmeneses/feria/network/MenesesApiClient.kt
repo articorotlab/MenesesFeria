@@ -6,6 +6,7 @@ import com.espectacularesmeneses.feria.model.AdminSession
 import com.espectacularesmeneses.feria.model.CardRegistrationAuthorization
 import com.espectacularesmeneses.feria.model.ChargeAuthorization
 import com.espectacularesmeneses.feria.model.CustomerHistory
+import com.espectacularesmeneses.feria.model.CustomerHistoryActivation
 import com.espectacularesmeneses.feria.model.CustomerHistoryItem
 import com.espectacularesmeneses.feria.model.CustomerFinancialDifferences
 import com.espectacularesmeneses.feria.model.CustomerFinancialHold
@@ -838,6 +839,35 @@ object MenesesApiClient {
             }
         }
 
+        val activationJson =
+            response.getJSONObject(
+                "activation"
+            )
+
+        val activation =
+            CustomerHistoryActivation(
+                activationId =
+                    activationJson.getString(
+                        "activationId"
+                    ),
+                activationNumber =
+                    activationJson.getInt(
+                        "activationNumber"
+                    ),
+                activationFee =
+                    activationJson.getLong(
+                        "activationFee"
+                    ),
+                activationFeeKnown =
+                    activationJson.getBoolean(
+                        "activationFeeKnown"
+                    ),
+                startedAt =
+                    activationJson.getString(
+                        "startedAt"
+                    )
+            )
+
         val historyJson =
             response.getJSONArray(
                 "history"
@@ -952,6 +982,94 @@ object MenesesApiClient {
                                 it.isNotBlank()
                             },
 
+                    checkoutId =
+                        item
+                            .optString(
+                                "checkoutId"
+                            )
+                            .takeIf {
+                                it.isNotBlank() &&
+                                        it != "null"
+                            },
+
+                    promotionId =
+                        item
+                            .optString(
+                                "promotionId"
+                            )
+                            .takeIf {
+                                it.isNotBlank() &&
+                                        it != "null"
+                            },
+
+                    promotionName =
+                        item
+                            .optString(
+                                "promotionName"
+                            )
+                            .takeIf {
+                                it.isNotBlank() &&
+                                        it != "null"
+                            },
+
+                    paidRechargeAmount =
+                        item
+                            .takeIf {
+                                it.has(
+                                    "paidRechargeAmount"
+                                ) &&
+                                        !it.isNull(
+                                            "paidRechargeAmount"
+                                        )
+                            }
+                            ?.getLong(
+                                "paidRechargeAmount"
+                            ),
+
+                    promotionalCreditAmount =
+                        item
+                            .takeIf {
+                                it.has(
+                                    "promotionalCreditAmount"
+                                ) &&
+                                        !it.isNull(
+                                            "promotionalCreditAmount"
+                                        )
+                            }
+                            ?.getLong(
+                                "promotionalCreditAmount"
+                            ),
+
+                    creditedAmount =
+                        item
+                            .takeIf {
+                                it.has(
+                                    "creditedAmount"
+                                ) &&
+                                        !it.isNull(
+                                            "creditedAmount"
+                                        )
+                            }
+                            ?.getLong(
+                                "creditedAmount"
+                            ),
+
+                    paymentMethod =
+                        item
+                            .optString(
+                                "paymentMethod"
+                            )
+                            .takeIf {
+                                it.isNotBlank() &&
+                                        it != "null"
+                            },
+
+                    paymentMethodEditable =
+                        item.optBoolean(
+                            "paymentMethodEditable",
+                            false
+                        ),
+
                     createdAt =
                         item.getString(
                             "createdAt"
@@ -1012,6 +1130,9 @@ object MenesesApiClient {
                     "transactionCounter"
                 ),
 
+            activation =
+                activation,
+
             financialHold =
                 financialHold,
 
@@ -1028,6 +1149,66 @@ object MenesesApiClient {
                 items
         )
     }
+
+    /*
+     * =====================================================
+     * CUSTOMER HISTORY PAYMENT METHOD CORRECTION
+     * =====================================================
+     */
+
+    fun changeCustomerHistoryPaymentMethod(
+        checkoutId: String,
+        cardId: Long,
+        uid: String,
+        newPaymentMethod: String,
+        reason: String =
+            "Corrección desde historial CUSTOMER"
+    ) {
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "checkoutId",
+                    checkoutId
+                )
+
+                put(
+                    "cardId",
+                    cardId
+                )
+
+                put(
+                    "uid",
+                    uid
+                )
+
+                put(
+                    "deviceCode",
+                    DeviceRuntimeIdentity.deviceCode()
+                )
+
+                put(
+                    "newPaymentMethod",
+                    newPaymentMethod
+                )
+
+                put(
+                    "reason",
+                    reason
+                )
+            }
+
+
+        postJson(
+            path =
+                "/customer-support/card-history/payment-method",
+
+            body =
+                body
+        )
+    }
+
 
     /*
      * =====================================================

@@ -7,12 +7,21 @@ data class CustomerHistory(
     val cardStatus: String,
     val balance: Long,
     val transactionCounter: Long,
+    val activation: CustomerHistoryActivation,
     val items: List<CustomerHistoryItem>,
     val financialHold: CustomerFinancialHold = CustomerFinancialHold(),
     val financialIncidentsCount: Int = 0,
     val financialIncidents: List<CustomerFinancialIncident> = emptyList(),
     val nfcBalance: Long? = null,
     val nfcTransactionCounter: Long? = null
+)
+
+data class CustomerHistoryActivation(
+    val activationId: String,
+    val activationNumber: Int,
+    val activationFee: Long,
+    val activationFeeKnown: Boolean,
+    val startedAt: String
 )
 
 data class CustomerFinancialHold(
@@ -73,6 +82,14 @@ data class CustomerHistoryItem(
     val unitPrice: Long?,
     val quantity: Int?,
     val rechargePointName: String?,
+    val checkoutId: String?,
+    val promotionId: String?,
+    val promotionName: String?,
+    val paidRechargeAmount: Long?,
+    val promotionalCreditAmount: Long?,
+    val creditedAmount: Long?,
+    val paymentMethod: String?,
+    val paymentMethodEditable: Boolean,
     val createdAt: String,
     val confirmedAt: String?,
     val failureReason: String?

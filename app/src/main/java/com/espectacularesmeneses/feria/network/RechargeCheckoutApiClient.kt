@@ -86,6 +86,19 @@ object RechargeCheckoutApiClient {
         val card: CardState
     )
 
+    data class ReconcileResult(
+        val reconciled: Boolean,
+        val action: String,
+        val checkout: Checkout?,
+        val cardPath: String?,
+        val checkoutId: String?,
+        val transactionId: String?,
+        val cardId: Long?,
+        val balance: Long?,
+        val transactionCounter: Long?,
+        val expectedAfter: CardState?
+    )
+
     fun newIdempotencyKey(): String = UUID.randomUUID().toString()
 
     fun prepare(
@@ -239,6 +252,75 @@ object RechargeCheckoutApiClient {
             duplicated = json.optBoolean("duplicated", false),
             checkout = checkoutFromJson(json.getJSONObject("checkout")),
             card = cardStateFromJson(json.getJSONObject("card"))
+        )
+    }
+
+    fun reconcile(
+        checkoutId: String,
+        targetUid: String,
+        isVirgin: Boolean,
+        cardId: Long? = null,
+        cardBalance: Long? = null,
+        cardCounter: Long? = null
+    ): ReconcileResult {
+
+        val body = JSONObject().apply {
+            put("checkoutId", checkoutId.trim())
+            put("deviceCode", DeviceRuntimeIdentity.deviceCode())
+            put("targetUid", targetUid.trim().uppercase())
+            put("isVirgin", isVirgin)
+
+            if (cardId != null) {
+                put("cardId", cardId)
+            }
+
+            if (cardBalance != null) {
+                put("cardBalance", cardBalance)
+            }
+
+            if (cardCounter != null) {
+                put("cardCounter", cardCounter)
+            }
+        }
+
+        val json = postJson(
+            path = "/recharge-checkouts/reconcile",
+            body = body
+        )
+
+        val expectedAfterJson =
+            json.optJSONObject("expectedAfter")
+
+        val expectedAfter =
+            if (
+                expectedAfterJson != null &&
+                expectedAfterJson.has("cardId") &&
+                expectedAfterJson.has("balance") &&
+                expectedAfterJson.has("transactionCounter")
+            ) {
+                CardState(
+                    cardId = expectedAfterJson.getLong("cardId"),
+                    uid = targetUid.trim().uppercase(),
+                    cardType = "CUSTOMER",
+                    status = "ACTIVE",
+                    balance = expectedAfterJson.getLong("balance"),
+                    transactionCounter = expectedAfterJson.getLong("transactionCounter")
+                )
+            } else {
+                null
+            }
+
+        return ReconcileResult(
+            reconciled = json.optBoolean("reconciled", false),
+            action = json.optString("action", ""),
+            checkout = json.optJSONObject("checkout")?.let(::checkoutFromJson),
+            cardPath = json.optStringOrNull("cardPath"),
+            checkoutId = json.optStringOrNull("checkoutId"),
+            transactionId = json.optStringOrNull("transactionId"),
+            cardId = json.optLongOrNull("cardId"),
+            balance = json.optLongOrNull("balance"),
+            transactionCounter = json.optLongOrNull("transactionCounter"),
+            expectedAfter = expectedAfter
         )
     }
 

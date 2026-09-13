@@ -57,8 +57,8 @@ sealed class NfcOperation {
 
     /*
      * Recarga normal legacy realizada por una TAQUILLA.
-     * Se conserva temporalmente mientras migramos las rutas
-     * promocionales y cualquier recuperación anterior.
+     * Se conserva temporalmente mientras terminamos de retirar
+     * rutas legacy de recuperación anteriores.
      */
     data class Recharge(
         val amount: Long
@@ -66,22 +66,32 @@ sealed class NfcOperation {
         NfcOperation()
 
     /*
-     * Recarga normal mediante recharge_checkout.
+     * Recarga TAQUILLA mediante recharge_checkout.
      *
      * paymentMethod:
      * - CASH = efectivo
      * - CARD = tarjeta bancaria
+     *
+     * Cuando promotionId != null, la misma operación representa
+     * una recarga promocional. El backend sigue siendo autoridad
+     * de paid_recharge_amount, promotional_credit_amount y credited.
+     *
+     * promotionName se conserva únicamente para presentación en UI.
      */
     data class CheckoutRecharge(
         val amount: Long,
-        val paymentMethod: String
+        val paymentMethod: String,
+        val promotionId: String? = null,
+        val promotionName: String? = null
     ) :
         NfcOperation()
 
     /*
-     * Recarga promocional realizada por una TAQUILLA.
+     * Flujo promocional legacy.
      *
-     * El backend sigue siendo la autoridad del monto acreditado.
+     * Se conserva temporalmente por compatibilidad mientras se
+     * eliminan referencias históricas. Las nuevas promociones de
+     * TAQUILLA se procesan mediante CheckoutRecharge.
      */
     data class PromotionalRecharge(
         val promotionId: String,

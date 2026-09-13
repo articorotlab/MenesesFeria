@@ -123,7 +123,6 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -132,6 +131,14 @@ private class PreviousTransactionRecoveredException(
     val reconciliation: TransactionReconciliation
 ) : Exception(
     "PREVIOUS_TRANSACTION_RECOVERED"
+)
+
+
+private class CheckoutOperationRecoveredException(
+    val recoveryAction: String,
+    val userMessage: String
+) : Exception(
+    "CHECKOUT_OPERATION_RECOVERED"
 )
 
 
@@ -857,10 +864,12 @@ class MainActivity :
                     },
 
                     onPreparePromotionalRecharge = {
-                            promotion ->
+                            promotion,
+                            paymentMethod ->
 
                         preparePromotionalRecharge(
-                            promotion
+                            promotion = promotion,
+                            paymentMethod = paymentMethod
                         )
                     },
 
@@ -2956,7 +2965,8 @@ class MainActivity :
 
     private fun prepareCheckoutRecharge(
         amount: Long,
-        paymentMethod: RechargeCheckoutApiClient.PaymentMethod
+        paymentMethod: RechargeCheckoutApiClient.PaymentMethod,
+        promotion: RechargePromotion? = null
     ) {
 
         val session =
@@ -2981,42 +2991,15 @@ class MainActivity :
             return
         }
 
-        pendingOperation =
-            NfcOperation.CheckoutRecharge(
-                amount = amount,
-                paymentMethod = paymentMethod.name
-            )
-
-        cardResult =
-            CardReadResult
-                .WaitingForRecharge(
-                    amount = amount,
-                    rechargePointName =
-                        session.rechargePointName
-                )
-    }
-
-
-    private fun preparePromotionalRecharge(
-        promotion: RechargePromotion
-    ) {
-
-        val session =
-            rechargeSession
-                ?: run {
-
-                    showError(
-                        "No existe una sesión RECHARGE activa."
-                    )
-
-                    return
-                }
-
         if (
-            promotion.id.isBlank() ||
-            promotion.cashAmount <= 0 ||
-            promotion.promotionalAmount < 0 ||
-            promotion.totalCreditAmount <= 0
+            promotion != null &&
+            (
+                    promotion.id.isBlank() ||
+                            promotion.cashAmount <= 0 ||
+                            promotion.promotionalAmount < 0 ||
+                            promotion.totalCreditAmount <= 0 ||
+                            promotion.cashAmount != amount
+                    )
         ) {
 
             showError(
@@ -3027,39 +3010,77 @@ class MainActivity :
         }
 
         pendingOperation =
-            NfcOperation.PromotionalRecharge(
-
+            NfcOperation.CheckoutRecharge(
+                amount = amount,
+                paymentMethod = paymentMethod.name,
                 promotionId =
-                    promotion.id,
-
+                    promotion?.id,
                 promotionName =
-                    promotion.name,
-
-                cashAmount =
-                    promotion.cashAmount,
-
-                promotionalAmount =
-                    promotion.promotionalAmount,
-
-                totalCreditAmount =
-                    promotion.totalCreditAmount
+                    promotion?.name
             )
 
         cardResult =
-            CardReadResult
-                .WaitingForDevCard(
+            if (
+                promotion == null
+            ) {
+                CardReadResult
+                    .WaitingForRecharge(
+                        amount = amount,
+                        rechargePointName =
+                            session.rechargePointName
+                    )
+            } else {
+                CardReadResult
+                    .WaitingForDevCard(
+                        title =
+                            promotion.name,
+                        message =
+                            "Taquilla: ${session.rechargePointName}\n\n" +
+                                    "Cliente paga: \$${promotion.cashAmount}\n" +
+                                    "Bonificación: +\$${promotion.promotionalAmount}\n" +
+                                    "Total acreditado: \$${promotion.totalCreditAmount}\n" +
+                                    "Método de pago: ${
+                                        if (
+                                            paymentMethod ==
+                                            RechargeCheckoutApiClient.PaymentMethod.CARD
+                                        ) {
+                                            "Tarjeta"
+                                        } else {
+                                            "Efectivo"
+                                        }
+                                    }\n\n" +
+                                    "NFC · LECTOR ACTIVO\n\n" +
+                                    "Acerca una tarjeta CLIENTE."
+                    )
+            }
+    }
 
-                    title =
-                        promotion.name,
 
-                    message =
-                        "Taquilla: ${session.rechargePointName}\n\n" +
-                                "Cliente paga: \$${promotion.cashAmount}\n" +
-                                "Bonificación: +\$${promotion.promotionalAmount}\n" +
-                                "Total acreditado: \$${promotion.totalCreditAmount}\n\n" +
-                                "NFC · LECTOR ACTIVO\n\n" +
-                                "Acerca una tarjeta CLIENTE."
-                )
+    private fun preparePromotionalRecharge(
+        promotion: RechargePromotion,
+        paymentMethod: RechargeCheckoutApiClient.PaymentMethod
+    ) {
+
+        /*
+         * Las promociones de TAQUILLA ya no usan el flujo financiero
+         * legacy. Se procesan mediante el mismo recharge_checkout que
+         * las recargas normales, conservando:
+         *
+         * - payment_method = CASH | CARD
+         * - paid_recharge_amount
+         * - promotional_credit_amount
+         * - credited_amount
+         * - NEW / EXISTING / REUSED
+         * - recuperación BEFORE / AFTER
+         */
+        prepareCheckoutRecharge(
+            amount =
+                promotion.cashAmount,
+            paymentMethod =
+                paymentMethod,
+            promotion =
+                promotion
+        )
     }
 
 
@@ -4907,35 +4928,6 @@ class MainActivity :
                         )
 
 
-                /*
-                 * El monto de devolución permanece visible
-                 * durante un minuto.
-                 */
-                window
-                    .decorView
-                    .postDelayed(
-                        {
-
-                            val currentResult =
-                                cardResult
-
-
-                            if (
-                                pendingOperation ==
-                                NfcOperation.Read &&
-                                currentResult is
-                                        CardReadResult.Success &&
-                                currentResult.title ==
-                                "Devolución completada"
-                            ) {
-
-                                cardResult =
-                                    CardReadResult.Waiting
-                            }
-
-                        },
-                        60_000L
-                    )
             }
 
 
@@ -5188,14 +5180,18 @@ class MainActivity :
                         resume = resume,
                         physicalCard = physicalCard,
                         paymentMethod = paymentMethod,
-                        targetUid = normalizedUid
+                        targetUid = normalizedUid,
+                        expectedPromotionId =
+                            operation.promotionId
                     )
                 } else {
                     prepareAndAuthorizeCheckoutExecution(
                         physicalCard = physicalCard,
                         paymentMethod = paymentMethod,
                         amount = operation.amount,
-                        targetUid = normalizedUid
+                        targetUid = normalizedUid,
+                        promotionId =
+                            operation.promotionId
                     )
                 }
 
@@ -5233,11 +5229,12 @@ class MainActivity :
                         }
                     }
 
-                    "EXISTING" -> {
+                    "EXISTING",
+                    "REUSED" -> {
                         val before =
                             execution.beforeCardState
                                 ?: throw IllegalStateException(
-                                    "El checkout EXISTING no contiene estado BEFORE."
+                                    "El checkout ${execution.checkout.cardPath} no contiene estado BEFORE."
                                 )
 
                         if (
@@ -5316,19 +5313,57 @@ class MainActivity :
                     else -> "Efectivo"
                 }
 
+            val isPromotion =
+                !confirmation.checkout
+                    .promotionId
+                    .isNullOrBlank()
+
             runOnUiThread {
 
                 cardResult =
                     CardReadResult
                         .Success(
-                            "Recarga taquilla realizada",
+                            if (
+                                isPromotion
+                            ) {
+                                "Promoción aplicada"
+                            } else {
+                                "Recarga taquilla realizada"
+                            },
                             buildString {
-                                append(
-                                    "Saldo registrado exitosamente: \$${confirmation.card.balance}"
-                                )
+
+                                if (
+                                    isPromotion
+                                ) {
+                                    append(
+                                        operation.promotionName
+                                            ?.takeIf {
+                                                it.isNotBlank()
+                                            }
+                                            ?: "Recarga promocional"
+                                    )
+                                    append(
+                                        "\nCliente paga: \$${confirmation.checkout.amounts.paidRecharge}"
+                                    )
+                                    append(
+                                        "\nPromocional otorgado: +\$${confirmation.checkout.amounts.promotionalCredit}"
+                                    )
+                                    append(
+                                        "\nCrédito entregado: \$${confirmation.checkout.amounts.credited}"
+                                    )
+                                    append(
+                                        "\nSaldo final: \$${confirmation.card.balance}"
+                                    )
+                                } else {
+                                    append(
+                                        "Saldo registrado exitosamente: \$${confirmation.card.balance}"
+                                    )
+                                }
+
                                 append(
                                     "\nCobrar al cliente: \$$totalDue"
                                 )
+
                                 if (
                                     activationFee > 0
                                 ) {
@@ -5336,11 +5371,31 @@ class MainActivity :
                                         "\nIncluye activación de tarjeta: \$$activationFee"
                                     )
                                 }
+
                                 append(
                                     "\nMétodo de pago: $paymentLabel"
                                 )
-
                             }
+                        )
+            }
+
+        } catch (
+            e: CheckoutOperationRecoveredException
+        ) {
+
+            pendingOperation =
+                NfcOperation.Read
+
+            runOnUiThread {
+
+                cardResult =
+                    CardReadResult
+                        .Success(
+                            title =
+                                "Operación anterior recuperada",
+
+                            message =
+                                e.userMessage
                         )
             }
 
@@ -5389,7 +5444,8 @@ class MainActivity :
         resume: RechargeCheckoutApiClient.ResumeResult,
         physicalCard: MenesesCard?,
         paymentMethod: RechargeCheckoutApiClient.PaymentMethod,
-        targetUid: String
+        targetUid: String,
+        expectedPromotionId: String?
     ): CheckoutExecution {
 
         val checkout =
@@ -5418,6 +5474,37 @@ class MainActivity :
             )
         }
 
+        val checkoutPromotionId =
+            checkout.promotionId
+                ?.trim()
+                ?.takeIf {
+                    it.isNotBlank()
+                }
+
+        val normalizedExpectedPromotionId =
+            expectedPromotionId
+                ?.trim()
+                ?.takeIf {
+                    it.isNotBlank()
+                }
+
+        if (
+            checkoutPromotionId !=
+            normalizedExpectedPromotionId
+        ) {
+            throw IllegalStateException(
+                if (
+                    checkoutPromotionId != null
+                ) {
+                    "Existe una promoción pendiente distinta para esta tarjeta. " +
+                            "Completa o recupera esa operación antes de iniciar otra."
+                } else {
+                    "Existe una recarga normal pendiente para esta tarjeta. " +
+                            "Completa o recupera esa operación antes de aplicar una promoción."
+                }
+            )
+        }
+
         return when (
             resume.state
                 .trim()
@@ -5435,55 +5522,436 @@ class MainActivity :
                             "El checkout pendiente no contiene estado AFTER."
                         )
 
-                if (
-                    checkout.cardPath == "NEW"
+                when (
+                    checkout.cardPath
                 ) {
-                    if (
-                        physicalCard != null &&
-                        !checkoutCardMatchesState(
-                            card = physicalCard,
-                            state = finalState
-                        )
-                    ) {
-                        throw IllegalStateException(
-                            "MANUAL_REVIEW_REQUIRED: la tarjeta NEW pendiente contiene un estado inesperado."
-                        )
-                    }
-                } else if (
-                    checkout.cardPath == "EXISTING"
-                ) {
-                    val before =
-                        resume.beforeCardState
-                            ?: throw IllegalStateException(
-                                "El checkout EXISTING pendiente no contiene BEFORE."
+                    "NEW" -> {
+
+                        /*
+                         * Un checkout NEW que quedó IN_PROGRESS pertenece a
+                         * una operación anterior interrumpida.
+                         *
+                         * NFC virgen = BEFORE:
+                         * no continuamos escribiendo silenciosamente. El
+                         * backend cierra la reservación y el checkout como
+                         * FAILED para que el operador inicie una operación
+                         * nueva de forma explícita.
+                         */
+                        if (
+                            physicalCard == null
+                        ) {
+                            val reconciliation =
+                                RechargeCheckoutApiClient
+                                    .reconcile(
+                                        checkoutId =
+                                            checkout.checkoutId,
+                                        targetUid =
+                                            targetUid,
+                                        isVirgin =
+                                            true
+                                    )
+
+                            if (
+                                reconciliation.action !=
+                                "FAILED_NEW_CHECKOUT_BEFORE_WRITE" &&
+                                reconciliation.action !=
+                                "ALREADY_FAILED"
+                            ) {
+                                throw IllegalStateException(
+                                    "Respuesta inesperada al recuperar checkout NEW: ${reconciliation.action}"
+                                )
+                            }
+
+                            throw CheckoutOperationRecoveredException(
+                                recoveryAction =
+                                    reconciliation.action,
+                                userMessage =
+                                    "La recarga anterior no alcanzó a escribirse en la NFC y fue cerrada de forma segura.\n\n" +
+                                            "La tarjeta continúa sin esa recarga.\n" +
+                                            "Inicia nuevamente la recarga cuando estés listo."
+                            )
+                        }
+
+                        /*
+                         * NFC == AFTER:
+                         * pedimos al backend reconciliar el checkout antes de
+                         * llamar CONFIRM. Nunca reescribimos la NFC.
+                         */
+                        if (
+                            checkoutCardMatchesState(
+                                card = physicalCard,
+                                state = finalState
+                            )
+                        ) {
+                            val reconciliation =
+                                RechargeCheckoutApiClient
+                                    .reconcile(
+                                        checkoutId =
+                                            checkout.checkoutId,
+                                        targetUid =
+                                            targetUid,
+                                        isVirgin =
+                                            false,
+                                        cardId =
+                                            physicalCard.cardId,
+                                        cardBalance =
+                                            physicalCard.balance,
+                                        cardCounter =
+                                            physicalCard.transactionCounter
+                                    )
+
+                            if (
+                                reconciliation.action !=
+                                "CONFIRM_REQUIRED"
+                            ) {
+                                throw IllegalStateException(
+                                    "Respuesta inesperada al recuperar checkout NEW escrito: ${reconciliation.action}"
+                                )
+                            }
+
+                            reconciliation.expectedAfter
+                                ?.let { reconciledAfter ->
+
+                                    if (
+                                        reconciledAfter.cardId !=
+                                        finalState.cardId ||
+                                        reconciledAfter.balance !=
+                                        finalState.balance ||
+                                        reconciledAfter.transactionCounter !=
+                                        finalState.transactionCounter
+                                    ) {
+                                        throw IllegalStateException(
+                                            "El estado AFTER reconciliado no coincide con el checkout pendiente."
+                                        )
+                                    }
+                                }
+
+                            CheckoutExecution(
+                                checkout = checkout,
+                                beforeCardState =
+                                    null,
+                                finalCardState =
+                                    finalState
                             )
 
-                    if (
-                        physicalCard == null ||
-                        (
-                                !checkoutCardMatchesState(
-                                    card = physicalCard,
-                                    state = before
-                                ) &&
-                                        !checkoutCardMatchesState(
-                                            card = physicalCard,
-                                            state = finalState
-                                        )
-                                )
-                    ) {
-                        throw IllegalStateException(
-                            "MANUAL_REVIEW_REQUIRED: la NFC no coincide con BEFORE ni AFTER."
-                        )
-                    }
-                }
+                        } else {
 
-                CheckoutExecution(
-                    checkout = checkout,
-                    beforeCardState =
-                        resume.beforeCardState,
-                    finalCardState =
-                        finalState
-                )
+                            /*
+                             * Tercer estado:
+                             * el backend preserva checkout + registration en
+                             * MANUAL_REVIEW_REQUIRED. No escribimos nada.
+                             */
+                            RechargeCheckoutApiClient
+                                .reconcile(
+                                    checkoutId =
+                                        checkout.checkoutId,
+                                    targetUid =
+                                        targetUid,
+                                    isVirgin =
+                                        false,
+                                    cardId =
+                                        physicalCard.cardId,
+                                    cardBalance =
+                                        physicalCard.balance,
+                                    cardCounter =
+                                        physicalCard.transactionCounter
+                                )
+
+                            throw IllegalStateException(
+                                "MANUAL_REVIEW_REQUIRED: la tarjeta NEW pendiente contiene un estado inesperado."
+                            )
+                        }
+                    }
+
+                    "EXISTING" -> {
+                        val before =
+                            resume.beforeCardState
+                                ?: throw IllegalStateException(
+                                    "El checkout EXISTING pendiente no contiene BEFORE."
+                                )
+
+                        val card =
+                            physicalCard
+                                ?: throw IllegalStateException(
+                                    "La NFC del checkout EXISTING ya no contiene una Meneses Card válida. " +
+                                            "No se modificó nada; requiere revisión antes de continuar."
+                                )
+
+                        val isBefore =
+                            checkoutCardMatchesState(
+                                card = card,
+                                state = before
+                            )
+
+                        val isAfter =
+                            checkoutCardMatchesState(
+                                card = card,
+                                state = finalState
+                            )
+
+                        if (
+                            isBefore
+                        ) {
+                            val reconciliation =
+                                RechargeCheckoutApiClient
+                                    .reconcile(
+                                        checkoutId =
+                                            checkout.checkoutId,
+                                        targetUid =
+                                            targetUid,
+                                        isVirgin =
+                                            false,
+                                        cardId =
+                                            card.cardId,
+                                        cardBalance =
+                                            card.balance,
+                                        cardCounter =
+                                            card.transactionCounter
+                                    )
+
+                            if (
+                                reconciliation.action !=
+                                "FAILED_EXISTING_CHECKOUT_BEFORE_WRITE" &&
+                                reconciliation.action !=
+                                "FAILED_CHECKOUT_FROM_FAILED_TRANSACTION" &&
+                                reconciliation.action !=
+                                "ALREADY_FAILED"
+                            ) {
+                                throw IllegalStateException(
+                                    "Respuesta inesperada al recuperar checkout EXISTING en BEFORE: ${reconciliation.action}"
+                                )
+                            }
+
+                            throw CheckoutOperationRecoveredException(
+                                recoveryAction =
+                                    reconciliation.action,
+                                userMessage =
+                                    "La recarga anterior no alcanzó a escribirse en la tarjeta y fue cerrada de forma segura.\n\n" +
+                                            "El saldo físico no cambió.\n" +
+                                            "Inicia nuevamente la recarga cuando estés listo."
+                            )
+                        }
+
+                        if (
+                            isAfter
+                        ) {
+                            val reconciliation =
+                                RechargeCheckoutApiClient
+                                    .reconcile(
+                                        checkoutId =
+                                            checkout.checkoutId,
+                                        targetUid =
+                                            targetUid,
+                                        isVirgin =
+                                            false,
+                                        cardId =
+                                            card.cardId,
+                                        cardBalance =
+                                            card.balance,
+                                        cardCounter =
+                                            card.transactionCounter
+                                    )
+
+                            when (
+                                reconciliation.action
+                            ) {
+                                "CONFIRM_REQUIRED" -> {
+
+                                    reconciliation.expectedAfter
+                                        ?.let { reconciledAfter ->
+
+                                            if (
+                                                reconciledAfter.cardId !=
+                                                finalState.cardId ||
+                                                reconciledAfter.balance !=
+                                                finalState.balance ||
+                                                reconciledAfter.transactionCounter !=
+                                                finalState.transactionCounter
+                                            ) {
+                                                throw IllegalStateException(
+                                                    "El estado AFTER reconciliado no coincide con el checkout pendiente."
+                                                )
+                                            }
+                                        }
+
+                                    CheckoutExecution(
+                                        checkout = checkout,
+                                        beforeCardState =
+                                            before,
+                                        finalCardState =
+                                            finalState
+                                    )
+                                }
+
+                                "CONFIRMED_CHECKOUT_FROM_CONFIRMED_TRANSACTION",
+                                "ALREADY_CONFIRMED" ->
+                                    throw CheckoutOperationRecoveredException(
+                                        recoveryAction =
+                                            reconciliation.action,
+                                        userMessage =
+                                            "La recarga anterior ya había quedado confirmada correctamente.\n\n" +
+                                                    "No se volvió a acreditar saldo ni se reescribió la NFC."
+                                    )
+
+                                else ->
+                                    throw IllegalStateException(
+                                        "Respuesta inesperada al recuperar checkout EXISTING en AFTER: ${reconciliation.action}"
+                                    )
+                            }
+
+                        } else {
+
+                            /*
+                             * Tercer estado:
+                             * reconcile crea la fotografía forense,
+                             * REVERSAL_REQUIRED y financial_hold.
+                             */
+                            RechargeCheckoutApiClient
+                                .reconcile(
+                                    checkoutId =
+                                        checkout.checkoutId,
+                                    targetUid =
+                                        targetUid,
+                                    isVirgin =
+                                        false,
+                                    cardId =
+                                        card.cardId,
+                                    cardBalance =
+                                        card.balance,
+                                    cardCounter =
+                                        card.transactionCounter
+                                )
+
+                            throw IllegalStateException(
+                                "MANUAL_REVIEW_REQUIRED: la NFC no coincide con BEFORE ni AFTER."
+                            )
+                        }
+                    }
+
+                    "REUSED" -> {
+                        val before =
+                            resume.beforeCardState
+                                ?: throw IllegalStateException(
+                                    "El checkout REUSED pendiente no contiene BEFORE."
+                                )
+
+                        val card =
+                            physicalCard
+                                ?: run {
+                                    RechargeCheckoutApiClient
+                                        .reconcile(
+                                            checkoutId = checkout.checkoutId,
+                                            targetUid = targetUid,
+                                            isVirgin = true
+                                        )
+
+                                    throw IllegalStateException(
+                                        "MANUAL_REVIEW_REQUIRED: la tarjeta REUSED esperada ya no contiene una Meneses Card válida."
+                                    )
+                                }
+
+                        val isBefore =
+                            checkoutCardMatchesState(
+                                card = card,
+                                state = before
+                            )
+
+                        val isAfter =
+                            checkoutCardMatchesState(
+                                card = card,
+                                state = finalState
+                            )
+
+                        if (isBefore) {
+                            val reconciliation =
+                                RechargeCheckoutApiClient
+                                    .reconcile(
+                                        checkoutId = checkout.checkoutId,
+                                        targetUid = targetUid,
+                                        isVirgin = false,
+                                        cardId = card.cardId,
+                                        cardBalance = card.balance,
+                                        cardCounter = card.transactionCounter
+                                    )
+
+                            if (
+                                reconciliation.action != "FAILED_REUSED_CHECKOUT_BEFORE_WRITE" &&
+                                reconciliation.action != "ALREADY_FAILED"
+                            ) {
+                                throw IllegalStateException(
+                                    "Respuesta inesperada al recuperar checkout REUSED en BEFORE: ${reconciliation.action}"
+                                )
+                            }
+
+                            throw CheckoutOperationRecoveredException(
+                                recoveryAction = reconciliation.action,
+                                userMessage =
+                                    "La reactivación anterior no alcanzó a escribirse en la tarjeta y fue cerrada de forma segura.\n\n" +
+                                            "La tarjeta continúa devuelta e inactiva.\n" +
+                                            "Inicia nuevamente la recarga cuando estés listo."
+                            )
+                        }
+
+                        if (isAfter) {
+                            val reconciliation =
+                                RechargeCheckoutApiClient
+                                    .reconcile(
+                                        checkoutId = checkout.checkoutId,
+                                        targetUid = targetUid,
+                                        isVirgin = false,
+                                        cardId = card.cardId,
+                                        cardBalance = card.balance,
+                                        cardCounter = card.transactionCounter
+                                    )
+
+                            if (reconciliation.action != "CONFIRM_REQUIRED") {
+                                throw IllegalStateException(
+                                    "Respuesta inesperada al recuperar checkout REUSED en AFTER: ${reconciliation.action}"
+                                )
+                            }
+
+                            reconciliation.expectedAfter
+                                ?.let { reconciledAfter ->
+                                    if (
+                                        reconciledAfter.cardId != finalState.cardId ||
+                                        reconciledAfter.balance != finalState.balance ||
+                                        reconciledAfter.transactionCounter != finalState.transactionCounter
+                                    ) {
+                                        throw IllegalStateException(
+                                            "El estado AFTER reconciliado no coincide con el checkout REUSED pendiente."
+                                        )
+                                    }
+                                }
+
+                            CheckoutExecution(
+                                checkout = checkout,
+                                beforeCardState = before,
+                                finalCardState = finalState
+                            )
+
+                        } else {
+                            RechargeCheckoutApiClient
+                                .reconcile(
+                                    checkoutId = checkout.checkoutId,
+                                    targetUid = targetUid,
+                                    isVirgin = false,
+                                    cardId = card.cardId,
+                                    cardBalance = card.balance,
+                                    cardCounter = card.transactionCounter
+                                )
+
+                            throw IllegalStateException(
+                                "MANUAL_REVIEW_REQUIRED: la NFC REUSED no coincide con BEFORE ni AFTER."
+                            )
+                        }
+                    }
+
+                    else ->
+                        throw IllegalStateException(
+                            "Este tipo de tarjeta todavía no puede recuperarse automáticamente: " +
+                                    checkout.cardPath
+                        )
+                }
             }
 
             "PREPARED" -> {
@@ -5528,6 +5996,25 @@ class MainActivity :
                                 )
                         }
 
+                        "REUSED" -> {
+                            val card =
+                                requireReusableCustomerForCheckout(
+                                    physicalCard
+                                )
+
+                            RechargeCheckoutApiClient
+                                .authorizeExisting(
+                                    checkoutId =
+                                        checkout.checkoutId,
+                                    targetUid =
+                                        targetUid,
+                                    cardBalance =
+                                        card.balance,
+                                    cardCounter =
+                                        card.transactionCounter
+                                )
+                        }
+
                         else ->
                             throw IllegalStateException(
                                 "Este tipo de tarjeta todavía no puede procesarse automáticamente: " +
@@ -5552,21 +6039,13 @@ class MainActivity :
         }
     }
 
-
     private fun prepareAndAuthorizeCheckoutExecution(
         physicalCard: MenesesCard?,
         paymentMethod: RechargeCheckoutApiClient.PaymentMethod,
         amount: Long,
-        targetUid: String
+        targetUid: String,
+        promotionId: String? = null
     ): CheckoutExecution {
-
-        if (
-            physicalCard != null
-        ) {
-            requireActiveCustomerForCheckout(
-                physicalCard
-            )
-        }
 
         val prepared =
             RechargeCheckoutApiClient
@@ -5576,7 +6055,9 @@ class MainActivity :
                     amount =
                         amount,
                     paymentMethod =
-                        paymentMethod
+                        paymentMethod,
+                    promotionId =
+                        promotionId
                 )
 
         val authorization =
@@ -5604,6 +6085,25 @@ class MainActivity :
                 "EXISTING" -> {
                     val card =
                         requireActiveCustomerForCheckout(
+                            physicalCard
+                        )
+
+                    RechargeCheckoutApiClient
+                        .authorizeExisting(
+                            checkoutId =
+                                prepared.checkout.checkoutId,
+                            targetUid =
+                                targetUid,
+                            cardBalance =
+                                card.balance,
+                            cardCounter =
+                                card.transactionCounter
+                        )
+                }
+
+                "REUSED" -> {
+                    val card =
+                        requireReusableCustomerForCheckout(
                             physicalCard
                         )
 
@@ -5701,6 +6201,40 @@ class MainActivity :
     }
 
 
+    private fun requireReusableCustomerForCheckout(
+        card: MenesesCard?
+    ): MenesesCard {
+
+        val reusable =
+            card
+                ?: throw IllegalArgumentException(
+                    "La tarjeta reutilizable no pudo leerse como CUSTOMER."
+                )
+
+        if (
+            reusable.type !=
+            CardType.CUSTOMER
+        ) {
+            throw IllegalArgumentException(
+                "La tarjeta no es CUSTOMER."
+            )
+        }
+
+        if (
+            reusable.status !=
+            CardStatus.INACTIVE ||
+            reusable.balance != 0L ||
+            reusable.transactionCounter != 0L
+        ) {
+            throw IllegalArgumentException(
+                "La tarjeta CUSTOMER no se encuentra en el estado físico esperado para reutilización."
+            )
+        }
+
+        return reusable
+    }
+
+
     private fun checkoutCardMatchesState(
         card: MenesesCard,
         state: RechargeCheckoutApiClient.CardState
@@ -5710,14 +6244,12 @@ class MainActivity :
                 state.cardId &&
                 card.type ==
                 CardType.CUSTOMER &&
-                card.status ==
-                CardStatus.ACTIVE &&
                 state.cardType.equals(
                     "CUSTOMER",
                     ignoreCase = true
                 ) &&
-                state.status.equals(
-                    "ACTIVE",
+                card.status.name.equals(
+                    state.status,
                     ignoreCase = true
                 ) &&
                 card.balance ==
@@ -7400,7 +7932,7 @@ fun MenesesHomeScreen(
     onRefreshRechargePoints: () -> Unit,
     onPrepareRecharge: (Long) -> Unit,
     onPrepareCheckoutRecharge: (Long, RechargeCheckoutApiClient.PaymentMethod) -> Unit,
-    onPreparePromotionalRecharge: (RechargePromotion) -> Unit,
+    onPreparePromotionalRecharge: (RechargePromotion, RechargeCheckoutApiClient.PaymentMethod) -> Unit,
     onPrepareAdminRecharge: (Long) -> Unit,
     onPrepareAdminAdjustment: (Long) -> Unit,
     onRefreshAdminCash: () -> Unit,
@@ -7435,47 +7967,13 @@ fun MenesesHomeScreen(
     }
 
     /*
-     * Resultados temporales. Los cobros, consultas, creación de clientes y
-     * errores operativos recuperables desaparecen después de 60 segundos si
-     * nadie realiza otra acción. Al cambiar cardResult, Compose cancela el
-     * temporizador anterior automáticamente.
+     * Los resultados finales de una operación NFC ya no se descartan por
+     * tiempo. Success y Error se presentan en un diálogo independiente y el
+     * operador debe cerrarlo explícitamente antes de continuar.
+     *
+     * Los estados intermedios (esperando tarjeta, operación preparada,
+     * procesando, etc.) permanecen dentro de la pantalla normal.
      */
-    LaunchedEffect(
-        cardResult,
-        gameSession?.sessionId,
-        rechargeSession?.sessionId,
-        adminSession?.sessionId
-    ) {
-        val shouldAutoDismiss =
-            when (cardResult) {
-
-                is CardReadResult.Success ->
-                    cardResult.title == "Cobro realizado" ||
-                            cardResult.title == "Recarga taquilla realizada" ||
-                            cardResult.title == "Promoción aplicada" ||
-                            cardResult.title == "Operación anterior recuperada" ||
-                            cardResult.title == "Saldo consultado" ||
-                            cardResult.title == "Cliente nuevo creado"
-
-                is CardReadResult.Error ->
-                    cardResult.message.equals(
-                        "Error al leer la tarjeta",
-                        ignoreCase = true
-                    ) ||
-                            cardResult.message.startsWith(
-                                "SALDO INSUFICIENTE",
-                                ignoreCase = true
-                            )
-
-                else ->
-                    false
-            }
-
-        if (shouldAutoDismiss) {
-            delay(60_000L)
-            onReset()
-        }
-    }
 
     val scroll = rememberScrollState()
 
@@ -7583,6 +8081,11 @@ fun MenesesHomeScreen(
 
     val drawerScope =
         rememberCoroutineScope()
+
+    OperationResultDialog(
+        cardResult = cardResult,
+        onClose = onReset
+    )
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -9740,7 +10243,7 @@ private fun RechargeDashboard(
     operationArmed: Boolean,
     onPrepareRecharge: (Long) -> Unit,
     onPrepareCheckoutRecharge: (Long, RechargeCheckoutApiClient.PaymentMethod) -> Unit,
-    onPreparePromotionalRecharge: (RechargePromotion) -> Unit,
+    onPreparePromotionalRecharge: (RechargePromotion, RechargeCheckoutApiClient.PaymentMethod) -> Unit,
     onPrepareBalance: () -> Unit,
     onPrepareHistory: () -> Unit,
     onPrepareCardReturn: () -> Unit,
@@ -9752,6 +10255,15 @@ private fun RechargeDashboard(
                 rechargeSession.sessionId
             ) {
                 mutableStateOf<Long?>(
+                    null
+                )
+            }
+
+    var paymentMethodPromotion
+            by remember(
+                rechargeSession.sessionId
+            ) {
+                mutableStateOf<RechargePromotion?>(
                     null
                 )
             }
@@ -9882,178 +10394,242 @@ private fun RechargeDashboard(
      * PAYMENT METHOD SCREEN
      * =====================================================
      *
-     * Al iniciar una recarga normal, el método de pago se
-     * solicita en una pantalla independiente y completamente
-     * blanca antes de armar la lectura NFC.
+     * Tanto una recarga normal como una promoción deben
+     * seleccionar CASH / CARD antes de armar la lectura NFC.
+     *
+     * La promoción conserva aquí su identidad hasta que el
+     * cajero elige el método de pago; después se ejecuta por
+     * recharge_checkout.
      * =====================================================
      */
     if (
-        paymentMethodAmount != null &&
+        (
+                paymentMethodAmount != null ||
+                        paymentMethodPromotion != null
+                ) &&
         !operationArmed
     ) {
-        val amount =
-            paymentMethodAmount ?: 0L
+        val selectedPromotion =
+            paymentMethodPromotion
 
-        Surface(
-            modifier =
-                Modifier.fillMaxSize(),
-            color =
-                Color.White
+        val amount =
+            selectedPromotion
+                ?.cashAmount
+                ?: paymentMethodAmount
+                ?: 0L
+
+        /*
+         * Esta selección se muestra en un Dialog de ancho completo para que
+         * no herede las restricciones del Column con verticalScroll del
+         * dashboard de TAQUILLA. Así el botón CANCELAR sí puede quedar
+         * anclado al borde inferior real de la pantalla.
+         */
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = {},
+            properties =
+                androidx.compose.ui.window.DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false,
+                    usePlatformDefaultWidth = false
+                )
         ) {
-            Box(
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .padding(24.dp),
-                contentAlignment =
-                    Alignment.Center
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.White
             ) {
-                Column(
+                Box(
                     modifier =
                         Modifier
-                            .fillMaxWidth()
-                            .widthIn(max = 520.dp),
-                    verticalArrangement =
-                        Arrangement.spacedBy(18.dp),
-                    horizontalAlignment =
-                        Alignment.CenterHorizontally
+                            .fillMaxSize()
+                            .padding(24.dp)
                 ) {
-                    Text(
-                        "Método de pago",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .headlineMedium,
-                        fontWeight =
-                            FontWeight.Bold,
-                        color =
-                            MaterialTheme.colorScheme.onBackground
-                    )
-
-                    Text(
-                        "¿Cómo pagó el cliente?",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .titleLarge,
-                        color =
-                            MaterialTheme.colorScheme.onBackground
-                    )
-
-                    Text(
-                        "Recarga: \$$amount",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .headlineSmall,
-                        fontWeight =
-                            FontWeight.SemiBold,
-                        color =
-                            MenesesGreen
-                    )
-
-                    Text(
-                        "Selecciona el método de pago antes de acercar la tarjeta NFC.",
-                        color =
-                            MenesesTextSecondary,
-                        textAlign =
-                            TextAlign.Center
-                    )
-
-                    Button(
+                    Column(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .height(60.dp),
-                        onClick = {
-                            paymentMethodAmount =
-                                null
-
-                            onPrepareCheckoutRecharge(
-                                amount,
-                                RechargeCheckoutApiClient
-                                    .PaymentMethod
-                                    .CASH
-                            )
-                        },
-                        colors =
-                            ButtonDefaults.buttonColors(
-                                containerColor =
-                                    MenesesGreen
-                            ),
-                        shape =
-                            RoundedCornerShape(18.dp)
+                                .widthIn(max = 620.dp)
+                                .align(Alignment.TopCenter)
+                                .padding(top = 40.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(18.dp),
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally
                     ) {
                         Text(
-                            "💵  Efectivo",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .titleMedium
+                            "Método de pago",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
                         )
+
+                        Text(
+                            "¿Cómo pagó el cliente?",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+
+                        if (selectedPromotion != null) {
+                            Text(
+                                selectedPromotion.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MenesesPurple,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Text(
+                                "Cliente paga: \$${selectedPromotion.cashAmount}\n" +
+                                        "Promocional: +\$${selectedPromotion.promotionalAmount}\n" +
+                                        "Crédito entregado: \$${selectedPromotion.totalCreditAmount}",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MenesesGreen,
+                                textAlign = TextAlign.Center
+                            )
+                        } else {
+                            Text(
+                                "Recarga: \$$amount",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MenesesGreen
+                            )
+                        }
+
+                        Text(
+                            "Selecciona el método de pago antes de acercar la tarjeta NFC.",
+                            color = MenesesTextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(18.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(18.dp)
+                        ) {
+                            Button(
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .height(116.dp),
+                                onClick = {
+                                    paymentMethodAmount = null
+                                    paymentMethodPromotion = null
+
+                                    if (selectedPromotion != null) {
+                                        onPreparePromotionalRecharge(
+                                            selectedPromotion,
+                                            RechargeCheckoutApiClient
+                                                .PaymentMethod
+                                                .CARD
+                                        )
+                                    } else {
+                                        onPrepareCheckoutRecharge(
+                                            amount,
+                                            RechargeCheckoutApiClient
+                                                .PaymentMethod
+                                                .CARD
+                                        )
+                                    }
+                                },
+                                colors =
+                                    ButtonDefaults.buttonColors(
+                                        containerColor = MenesesBlue
+                                    ),
+                                shape = RoundedCornerShape(24.dp)
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        "💳",
+                                        style = MaterialTheme.typography.headlineMedium
+                                    )
+                                    Text(
+                                        "TARJETA",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Button(
+                                modifier =
+                                    Modifier
+                                        .weight(1f)
+                                        .height(116.dp),
+                                onClick = {
+                                    paymentMethodAmount = null
+                                    paymentMethodPromotion = null
+
+                                    if (selectedPromotion != null) {
+                                        onPreparePromotionalRecharge(
+                                            selectedPromotion,
+                                            RechargeCheckoutApiClient
+                                                .PaymentMethod
+                                                .CASH
+                                        )
+                                    } else {
+                                        onPrepareCheckoutRecharge(
+                                            amount,
+                                            RechargeCheckoutApiClient
+                                                .PaymentMethod
+                                                .CASH
+                                        )
+                                    }
+                                },
+                                colors =
+                                    ButtonDefaults.buttonColors(
+                                        containerColor = MenesesGreen
+                                    ),
+                                shape = RoundedCornerShape(24.dp)
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        "💵",
+                                        style = MaterialTheme.typography.headlineMedium
+                                    )
+                                    Text(
+                                        "EFECTIVO",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     Button(
                         modifier =
                             Modifier
-                                .fillMaxWidth()
-                                .height(60.dp),
-                        onClick = {
-                            paymentMethodAmount =
-                                null
-
-                            onPrepareCheckoutRecharge(
-                                amount,
-                                RechargeCheckoutApiClient
-                                    .PaymentMethod
-                                    .CARD
-                            )
-                        },
-                        colors =
-                            ButtonDefaults.buttonColors(
-                                containerColor =
-                                    MenesesBlue
-                            ),
-                        shape =
-                            RoundedCornerShape(18.dp)
-                    ) {
-                        Text(
-                            "💳  Tarjeta",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .titleMedium
-                        )
-                    }
-
-                    Spacer(
-                        modifier =
-                            Modifier.height(22.dp)
-                    )
-
-                    Button(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
+                                .align(Alignment.BottomCenter)
+                                .widthIn(min = 220.dp, max = 320.dp)
                                 .height(56.dp),
                         onClick = {
-                            paymentMethodAmount =
-                                null
+                            val wasPromotion =
+                                paymentMethodPromotion != null
+
+                            paymentMethodAmount = null
+                            paymentMethodPromotion = null
+
+                            if (wasPromotion) {
+                                showPromotions = true
+                            }
                         },
                         colors =
                             ButtonDefaults.buttonColors(
-                                containerColor =
-                                    MenesesDanger
+                                containerColor = MenesesDanger
                             ),
-                        shape =
-                            RoundedCornerShape(18.dp)
+                        shape = RoundedCornerShape(18.dp)
                     ) {
                         Text(
-                            "✕  Cancelar",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .titleMedium
+                            "✕  CANCELAR",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
@@ -10325,17 +10901,19 @@ private fun RechargeDashboard(
                         onClick = {
 
                             /*
-                             * Cerramos la lista antes de armar la
-                             * operación. Enseguida cardResult pasa a
-                             * WaitingForDevCard y MenesesHomeScreen
-                             * muestra RechargeNfcWaitingPage.
+                             * La promoción todavía no arma una operación NFC.
+                             * Primero conservamos la selección y preguntamos
+                             * cómo pagó el cliente. CASH / CARD se enviará al
+                             * recharge_checkout junto con promotionId.
                              */
                             showPromotions =
                                 false
 
-                            onPreparePromotionalRecharge(
+                            paymentMethodAmount =
+                                null
+
+                            paymentMethodPromotion =
                                 promotion
-                            )
                         }
                     ) {
                         Row(
@@ -10514,6 +11092,9 @@ private fun RechargeDashboard(
         text = selectedRechargeAmount?.let { "💳  Realizar recarga  \$$it" } ?: "💳  Realizar recarga",
         enabled = !operationArmed && (selectedRechargeAmount ?: 0) > 0,
         onClick = {
+            paymentMethodPromotion =
+                null
+
             paymentMethodAmount =
                 selectedRechargeAmount
         }
@@ -11515,17 +12096,62 @@ private fun EditRechargePointPage(
 
 
 @Composable
-private fun NfcResultArea(cardResult: CardReadResult, onCancelOperation: () -> Unit, onReset: () -> Unit) {
+private fun OperationResultDialog(
+    cardResult: CardReadResult,
+    onClose: () -> Unit
+) {
+    val isTerminalResult =
+        cardResult is CardReadResult.Success ||
+                cardResult is CardReadResult.Error ||
+                cardResult is CardReadResult.HistoryLoaded
+
+    if (!isTerminalResult) {
+        return
+    }
+
+    /*
+     * No permitimos cerrar tocando fuera del diálogo. El operador debe
+     * confirmar que vio el resultado mediante el botón CERRAR.
+     *
+     * onClose reutiliza onReset, el mismo mecanismo que antes utilizaba el
+     * auto-dismiss de 60 segundos. No ejecuta ni repite ninguna transacción.
+     */
+    val resultScrollState =
+        rememberScrollState()
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { },
+        confirmButton = {
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onClose
+            ) {
+                Text("CERRAR")
+            }
+        },
+        text = {
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(resultScrollState),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                TerminalNfcResultContent(
+                    cardResult = cardResult,
+                    resultScrollState = resultScrollState
+                )
+            }
+        }
+    )
+}
+
+@Composable
+private fun TerminalNfcResultContent(
+    cardResult: CardReadResult,
+    resultScrollState: androidx.compose.foundation.ScrollState
+) {
     when (cardResult) {
-        CardReadResult.Waiting -> Unit
-        CardReadResult.WaitingForBalance -> ArmedOperationCard("Consulta preparada", "Acerca una tarjeta CLIENTE para consultar su saldo.", onCancelOperation)
-        CardReadResult.WaitingForHistory -> ArmedOperationCard("Historial preparado", "Acerca una tarjeta CLIENTE para consultar sus movimientos.", onCancelOperation)
-        is CardReadResult.WaitingForRecharge -> ArmedOperationCard("Recarga preparada", "${cardResult.rechargePointName}\n\nMonto: \$${cardResult.amount}\n\nAcerca una tarjeta CUSTOMER.", onCancelOperation)
-        is CardReadResult.WaitingForCharge -> ArmedOperationCard("Cobro preparado", "${cardResult.gameName}\n\nPersonas: ${cardResult.peopleCount}\nTotal: \$${cardResult.estimatedTotal}\n\nAcerca una tarjeta CUSTOMER.", onCancelOperation)
-        is CardReadResult.WaitingForDevCard -> ArmedOperationCard(cardResult.title, cardResult.message, onCancelOperation)
-        is CardReadResult.Registered -> Unit
-        is CardReadResult.HistoryLoaded -> CustomerHistoryCard(cardResult.history)
-        is CardReadResult.Unregistered -> StatusCard("Tarjeta no registrada", "UID: ${cardResult.uid}")
         is CardReadResult.Success -> {
             when (cardResult.title) {
                 "Saldo consultado" ->
@@ -11549,10 +12175,48 @@ private fun NfcResultArea(cardResult: CardReadResult, onCancelOperation: () -> U
                     )
 
                 else ->
-                    StatusCard(cardResult.title, cardResult.message)
+                    StatusCard(
+                        cardResult.title,
+                        cardResult.message
+                    )
             }
         }
-        is CardReadResult.Error -> ErrorCard(cardResult.message, onReset)
+
+        is CardReadResult.Error ->
+            ErrorCard(
+                message = cardResult.message
+            )
+
+        is CardReadResult.HistoryLoaded ->
+            CustomerHistoryCard(
+                history =
+                    cardResult.history,
+                resultScrollState =
+                    resultScrollState
+            )
+
+        else -> Unit
+    }
+}
+
+@Composable
+private fun NfcResultArea(cardResult: CardReadResult, onCancelOperation: () -> Unit, onReset: () -> Unit) {
+    when (cardResult) {
+        CardReadResult.Waiting -> Unit
+        CardReadResult.WaitingForBalance -> ArmedOperationCard("Consulta preparada", "Acerca una tarjeta CLIENTE para consultar su saldo.", onCancelOperation)
+        CardReadResult.WaitingForHistory -> ArmedOperationCard("Historial preparado", "Acerca una tarjeta CLIENTE para consultar sus movimientos.", onCancelOperation)
+        is CardReadResult.WaitingForRecharge -> ArmedOperationCard("Recarga preparada", "${cardResult.rechargePointName}\n\nMonto: \$${cardResult.amount}\n\nAcerca una tarjeta CUSTOMER.", onCancelOperation)
+        is CardReadResult.WaitingForCharge -> ArmedOperationCard("Cobro preparado", "${cardResult.gameName}\n\nPersonas: ${cardResult.peopleCount}\nTotal: \$${cardResult.estimatedTotal}\n\nAcerca una tarjeta CUSTOMER.", onCancelOperation)
+        is CardReadResult.WaitingForDevCard -> ArmedOperationCard(cardResult.title, cardResult.message, onCancelOperation)
+        is CardReadResult.Registered -> Unit
+        is CardReadResult.HistoryLoaded -> Unit
+        is CardReadResult.Unregistered -> StatusCard("Tarjeta no registrada", "UID: ${cardResult.uid}")
+        /*
+         * Los resultados terminales se muestran ahora en
+         * OperationResultDialog(), fuera del layout normal.
+         */
+        is CardReadResult.Success -> Unit
+        is CardReadResult.Error -> Unit
     }
 }
 
@@ -11655,7 +12319,7 @@ private fun GameChargeSuccessCard(
             }
 
             Text(
-                text = "Este mensaje se cerrará automáticamente en 1 minuto.",
+                text = "Revisa el resultado y presiona CERRAR para continuar.",
                 color = MenesesTextSecondary,
                 style = MaterialTheme.typography.labelMedium,
                 textAlign = TextAlign.Center
@@ -11928,7 +12592,7 @@ private fun CustomerCardReturnSuccessCard(
 
             Text(
                 text =
-                    "Este mensaje permanecerá visible durante 1 minuto.",
+                    "Revisa el resultado y presiona CERRAR para continuar.",
                 color =
                     MenesesTextSecondary,
                 style =
@@ -12177,7 +12841,7 @@ private fun RechargeSuccessCard(
 
             Text(
                 text =
-                    "Este mensaje se cerrará automáticamente en 1 minuto.",
+                    "Revisa el resultado y presiona CERRAR para continuar.",
                 color =
                     MenesesTextSecondary,
                 style =
@@ -12507,7 +13171,7 @@ private fun PromotionSuccessCard(
 
             Text(
                 text =
-                    "Este mensaje se cerrará automáticamente en 1 minuto.",
+                    "Revisa el resultado y presiona CERRAR para continuar.",
                 color =
                     MenesesTextSecondary,
                 style =
@@ -12628,7 +13292,7 @@ private fun BalanceResultCard(balanceText: String) {
             )
 
             Text(
-                text = "Este resultado se cerrará automáticamente en 1 minuto.",
+                text = "Revisa el resultado y presiona CERRAR para continuar.",
                 color = MenesesTextSecondary,
                 style = MaterialTheme.typography.labelMedium,
                 textAlign = TextAlign.Center
@@ -12704,7 +13368,7 @@ private fun NewCustomerSuccessCard(
             )
 
             Text(
-                text = "Este mensaje se cerrará automáticamente en 1 minuto.",
+                text = "Revisa el resultado y presiona CERRAR para continuar.",
                 color = MenesesTextSecondary,
                 style = MaterialTheme.typography.labelMedium,
                 textAlign = TextAlign.Center
@@ -12716,8 +13380,7 @@ private fun NewCustomerSuccessCard(
 
 @Composable
 private fun ErrorCard(
-    message: String,
-    onReset: () -> Unit
+    message: String
 ) {
     val insufficientBalance =
         message.startsWith(
@@ -12797,7 +13460,7 @@ private fun ErrorCard(
                 )
 
                 Text(
-                    text = "Este mensaje se cerrará automáticamente en 1 minuto.",
+                    text = "Revisa el resultado y presiona CERRAR para continuar.",
                     color = MenesesTextSecondary,
                     style = MaterialTheme.typography.labelMedium,
                     textAlign = TextAlign.Center
@@ -12810,37 +13473,97 @@ private fun ErrorCard(
                 )
             }
 
-            OutlinedButton(
-                modifier = Modifier.fillMaxWidth(),
-                onClick = onReset
-            ) {
-                Text("Aceptar")
-            }
         }
     }
 }
 
 @Composable
 private fun CustomerHistoryCard(
-    history: CustomerHistory
+    history: CustomerHistory,
+    resultScrollState: androidx.compose.foundation.ScrollState
 ) {
+    var displayedHistory
+            by remember(
+                history
+            ) {
+                mutableStateOf(
+                    history
+                )
+            }
+
+    var pendingPaymentChange
+            by remember {
+                mutableStateOf<
+                        Pair<
+                                CustomerHistoryItem,
+                                String
+                                >?
+                        >(
+                    null
+                )
+            }
+
+    var changingCheckoutId
+            by remember {
+                mutableStateOf<String?>(
+                    null
+                )
+            }
+
+    var paymentChangeError
+            by remember {
+                mutableStateOf<String?>(
+                    null
+                )
+            }
+
+    val scope =
+        rememberCoroutineScope()
+
     val financialHoldActive =
-        history.financialHold.active
+        displayedHistory
+            .financialHold
+            .active
 
     val latestIncident =
-        history.financialIncidents
+        displayedHistory
+            .financialIncidents
             .firstOrNull()
 
     val currentNfcBalance =
-        history.nfcBalance
-            ?: latestIncident?.nfc?.balance
+        displayedHistory
+            .nfcBalance
+            ?: latestIncident
+                ?.nfc
+                ?.balance
 
     val currentNfcCounter =
-        history.nfcTransactionCounter
-            ?: latestIncident?.nfc?.transactionCounter
+        displayedHistory
+            .nfcTransactionCounter
+            ?: latestIncident
+                ?.nfc
+                ?.transactionCounter
 
     val ledgerBalance =
-        latestIncident?.ledger?.balance
+        latestIncident
+            ?.ledger
+            ?.balance
+
+    val visibleItems =
+        displayedHistory
+            .items
+            .filter {
+                /*
+                 * CARD_CREATED se representa abajo mediante
+                 * CustomerHistoryActivationCard().
+                 *
+                 * Así la activación queda SIEMPRE como el primer
+                 * registro histórico de la activación actual y
+                 * nunca se duplica.
+                 */
+                it.type !=
+                        "CARD_CREATED"
+            }
 
     fun signedMoneyDifference(
         value: Long
@@ -12852,17 +13575,46 @@ private fun CustomerHistoryCard(
         }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MenesesSurface)
+        modifier =
+            Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(
+                24.dp
+            ),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    MenesesSurface
+            )
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            modifier =
+                Modifier.padding(
+                    18.dp
+                ),
+            verticalArrangement =
+                Arrangement.spacedBy(
+                    14.dp
+                )
         ) {
             Text(
-                text = "Historial de tarjeta",
-                style = MaterialTheme.typography.titleLarge
+                text =
+                    "Historial de tarjeta",
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleLarge
+            )
+
+            Text(
+                text =
+                    "Card #${displayedHistory.cardId} · Activación #${displayedHistory.activation.activationNumber}",
+                color =
+                    MenesesTextSecondary,
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodyMedium
             )
 
             if (
@@ -12870,22 +13622,33 @@ private fun CustomerHistoryCard(
             ) {
                 Card(
                     modifier =
-                        Modifier.fillMaxWidth(),
+                        Modifier
+                            .fillMaxWidth(),
                     shape =
-                        RoundedCornerShape(22.dp),
+                        RoundedCornerShape(
+                            22.dp
+                        ),
                     colors =
-                        CardDefaults.cardColors(
-                            containerColor =
-                                Color(0xFFFFEEEE)
-                        )
+                        CardDefaults
+                            .cardColors(
+                                containerColor =
+                                    Color(
+                                        0xFFFFEEEE
+                                    )
+                            )
                 ) {
                     Column(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .padding(18.dp),
+                                .padding(
+                                    18.dp
+                                ),
                         verticalArrangement =
-                            Arrangement.spacedBy(8.dp)
+                            Arrangement
+                                .spacedBy(
+                                    8.dp
+                                )
                     ) {
                         Text(
                             text =
@@ -12893,18 +13656,22 @@ private fun CustomerHistoryCard(
                             color =
                                 MenesesError,
                             style =
-                                MaterialTheme.typography.titleLarge,
+                                MaterialTheme
+                                    .typography
+                                    .titleLarge,
                             fontWeight =
                                 FontWeight.Bold
                         )
 
                         Text(
                             text =
-                                "TARJETA #${history.cardId} BLOQUEADA PARA OPERACIONES FINANCIERAS",
+                                "TARJETA #${displayedHistory.cardId} BLOQUEADA PARA OPERACIONES FINANCIERAS",
                             color =
                                 MenesesError,
                             style =
-                                MaterialTheme.typography.titleMedium,
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium,
                             fontWeight =
                                 FontWeight.Bold
                         )
@@ -12913,36 +13680,48 @@ private fun CustomerHistoryCard(
                             text =
                                 "La tarjeta conserva un estado físico que no coincide con el estado financiero del sistema. No recargar, cobrar, ajustar ni devolver hasta completar la revisión.",
                             style =
-                                MaterialTheme.typography.bodyMedium
+                                MaterialTheme
+                                    .typography
+                                    .bodyMedium
                         )
 
-                        history.financialHold.reason
+                        displayedHistory
+                            .financialHold
+                            .reason
                             ?.takeIf {
                                 it.isNotBlank()
                             }
-                            ?.let { reason ->
+                            ?.let {
+                                    reason ->
                                 Text(
                                     text =
                                         "Motivo: $reason",
                                     color =
                                         MenesesTextSecondary,
                                     style =
-                                        MaterialTheme.typography.bodySmall
+                                        MaterialTheme
+                                            .typography
+                                            .bodySmall
                                 )
                             }
 
-                        history.financialHold.heldAt
+                        displayedHistory
+                            .financialHold
+                            .heldAt
                             ?.takeIf {
                                 it.isNotBlank()
                             }
-                            ?.let { heldAt ->
+                            ?.let {
+                                    heldAt ->
                                 Text(
                                     text =
                                         "Bloqueo registrado: $heldAt",
                                     color =
                                         MenesesTextSecondary,
                                     style =
-                                        MaterialTheme.typography.bodySmall
+                                        MaterialTheme
+                                            .typography
+                                            .bodySmall
                                 )
                             }
                     }
@@ -12950,22 +13729,31 @@ private fun CustomerHistoryCard(
 
                 Card(
                     modifier =
-                        Modifier.fillMaxWidth(),
+                        Modifier
+                            .fillMaxWidth(),
                     shape =
-                        RoundedCornerShape(22.dp),
+                        RoundedCornerShape(
+                            22.dp
+                        ),
                     colors =
-                        CardDefaults.cardColors(
-                            containerColor =
-                                MenesesOrangeSoft
-                        )
+                        CardDefaults
+                            .cardColors(
+                                containerColor =
+                                    MenesesOrangeSoft
+                            )
                 ) {
                     Column(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .padding(18.dp),
+                                .padding(
+                                    18.dp
+                                ),
                         verticalArrangement =
-                            Arrangement.spacedBy(12.dp)
+                            Arrangement
+                                .spacedBy(
+                                    12.dp
+                                )
                     ) {
                         Text(
                             text =
@@ -12973,7 +13761,9 @@ private fun CustomerHistoryCard(
                             color =
                                 MenesesDanger,
                             style =
-                                MaterialTheme.typography.titleLarge,
+                                MaterialTheme
+                                    .typography
+                                    .titleLarge,
                             fontWeight =
                                 FontWeight.Bold
                         )
@@ -12984,24 +13774,37 @@ private fun CustomerHistoryCard(
                             color =
                                 MenesesTextSecondary,
                             style =
-                                MaterialTheme.typography.bodySmall
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall
                         )
 
                         Surface(
                             modifier =
-                                Modifier.fillMaxWidth(),
+                                Modifier
+                                    .fillMaxWidth(),
                             shape =
-                                RoundedCornerShape(16.dp),
+                                RoundedCornerShape(
+                                    16.dp
+                                ),
                             color =
-                                Color.White.copy(
-                                    alpha = 0.72f
-                                )
+                                Color.White
+                                    .copy(
+                                        alpha =
+                                            0.72f
+                                    )
                         ) {
                             Column(
                                 modifier =
-                                    Modifier.padding(14.dp),
+                                    Modifier
+                                        .padding(
+                                            14.dp
+                                        ),
                                 verticalArrangement =
-                                    Arrangement.spacedBy(8.dp)
+                                    Arrangement
+                                        .spacedBy(
+                                            8.dp
+                                        )
                             ) {
                                 Text(
                                     text =
@@ -13015,34 +13818,49 @@ private fun CustomerHistoryCard(
                                 Text(
                                     text =
                                         if (
-                                            currentNfcBalance != null &&
-                                            currentNfcCounter != null
+                                            currentNfcBalance !=
+                                            null &&
+                                            currentNfcCounter !=
+                                            null
                                         ) {
                                             "Saldo: \$$currentNfcBalance   ·   Contador: $currentNfcCounter"
                                         } else {
                                             "Estado NFC no disponible"
                                         },
                                     style =
-                                        MaterialTheme.typography.titleMedium
+                                        MaterialTheme
+                                            .typography
+                                            .titleMedium
                                 )
                             }
                         }
 
                         Surface(
                             modifier =
-                                Modifier.fillMaxWidth(),
+                                Modifier
+                                    .fillMaxWidth(),
                             shape =
-                                RoundedCornerShape(16.dp),
+                                RoundedCornerShape(
+                                    16.dp
+                                ),
                             color =
-                                Color.White.copy(
-                                    alpha = 0.72f
-                                )
+                                Color.White
+                                    .copy(
+                                        alpha =
+                                            0.72f
+                                    )
                         ) {
                             Column(
                                 modifier =
-                                    Modifier.padding(14.dp),
+                                    Modifier
+                                        .padding(
+                                            14.dp
+                                        ),
                                 verticalArrangement =
-                                    Arrangement.spacedBy(8.dp)
+                                    Arrangement
+                                        .spacedBy(
+                                            8.dp
+                                        )
                             ) {
                                 Text(
                                     text =
@@ -13055,32 +13873,45 @@ private fun CustomerHistoryCard(
 
                                 Text(
                                     text =
-                                        "Saldo: \$${history.balance}   ·   Contador: ${history.transactionCounter}",
+                                        "Saldo: \$${displayedHistory.balance}   ·   Contador: ${displayedHistory.transactionCounter}",
                                     style =
-                                        MaterialTheme.typography.titleMedium
+                                        MaterialTheme
+                                            .typography
+                                            .titleMedium
                                 )
                             }
                         }
 
                         Surface(
                             modifier =
-                                Modifier.fillMaxWidth(),
+                                Modifier
+                                    .fillMaxWidth(),
                             shape =
-                                RoundedCornerShape(16.dp),
+                                RoundedCornerShape(
+                                    16.dp
+                                ),
                             color =
-                                Color.White.copy(
-                                    alpha = 0.72f
-                                )
+                                Color.White
+                                    .copy(
+                                        alpha =
+                                            0.72f
+                                    )
                         ) {
                             Column(
                                 modifier =
-                                    Modifier.padding(14.dp),
+                                    Modifier
+                                        .padding(
+                                            14.dp
+                                        ),
                                 verticalArrangement =
-                                    Arrangement.spacedBy(8.dp)
+                                    Arrangement
+                                        .spacedBy(
+                                            8.dp
+                                        )
                             ) {
                                 Text(
                                     text =
-                                        "LEDGER V2",
+                                        "LEDGER V2 · LOTES",
                                     color =
                                         MenesesGreenDark,
                                     fontWeight =
@@ -13093,104 +13924,93 @@ private fun CustomerHistoryCard(
                                             ?.let {
                                                 "Saldo: \$$it"
                                             }
-                                            ?: "Saldo Ledger no disponible",
+                                            ?: "Estado Ledger no disponible",
                                     style =
-                                        MaterialTheme.typography.titleMedium
+                                        MaterialTheme
+                                            .typography
+                                            .titleMedium
                                 )
                             }
                         }
 
                         if (
-                            currentNfcBalance != null &&
-                            ledgerBalance != null
+                            currentNfcBalance !=
+                            null &&
+                            currentNfcCounter !=
+                            null
                         ) {
-                            val nfcVsPostgreSQL =
-                                currentNfcBalance -
-                                        history.balance
+                            Text(
+                                text =
+                                    "NFC − PostgreSQL: " +
+                                            signedMoneyDifference(
+                                                currentNfcBalance -
+                                                        displayedHistory.balance
+                                            ) +
+                                            "   ·   Δ contador: " +
+                                            (
+                                                    currentNfcCounter -
+                                                            displayedHistory.transactionCounter
+                                                    ),
+                                color =
+                                    MenesesDanger,
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+                        }
 
-                            val nfcVsLedger =
-                                currentNfcBalance -
-                                        ledgerBalance
+                        if (
+                            currentNfcBalance !=
+                            null &&
+                            ledgerBalance !=
+                            null
+                        ) {
+                            Text(
+                                text =
+                                    "NFC − Ledger: " +
+                                            signedMoneyDifference(
+                                                currentNfcBalance -
+                                                        ledgerBalance
+                                            ),
+                                color =
+                                    MenesesDanger,
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+                        }
 
-                            val postgreSQLVsLedger =
-                                history.balance -
-                                        ledgerBalance
-
+                        if (
+                            latestIncident !=
+                            null
+                        ) {
                             HorizontalDivider()
 
                             Text(
                                 text =
-                                    "Diferencias actuales",
-                                style =
-                                    MaterialTheme.typography.titleMedium,
+                                    "Último incidente",
                                 fontWeight =
                                     FontWeight.Bold
                             )
 
                             Text(
                                 text =
-                                    "NFC − PostgreSQL: ${signedMoneyDifference(nfcVsPostgreSQL)}"
+                                    "Detectado: ${latestIncident.detectedAt}"
                             )
 
                             Text(
                                 text =
-                                    "NFC − Ledger V2: ${signedMoneyDifference(nfcVsLedger)}"
-                            )
-
-                            Text(
-                                text =
-                                    "PostgreSQL − Ledger V2: ${signedMoneyDifference(postgreSQLVsLedger)}"
-                            )
-                        }
-                    }
-                }
-
-                if (
-                    latestIncident != null
-                ) {
-                    Card(
-                        modifier =
-                            Modifier.fillMaxWidth(),
-                        shape =
-                            RoundedCornerShape(22.dp),
-                        colors =
-                            CardDefaults.cardColors(
-                                containerColor =
-                                    MenesesBlueSoft
-                            )
-                    ) {
-                        Column(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(18.dp),
-                            verticalArrangement =
-                                Arrangement.spacedBy(7.dp)
-                        ) {
-                            Text(
-                                text =
-                                    "Incidente preservado",
-                                color =
-                                    MenesesBlueDark,
-                                style =
-                                    MaterialTheme.typography.titleLarge,
-                                fontWeight =
-                                    FontWeight.Bold
-                            )
-
-                            Text(
-                                text =
-                                    "Tipo: ${latestIncident.type}",
-                                fontWeight =
-                                    FontWeight.SemiBold
+                                    "Tipo: ${latestIncident.type}"
                             )
 
                             Text(
                                 text =
                                     "Transacción: ${latestIncident.transaction.type ?: "N/D"}" +
                                             (
-                                                    latestIncident.transaction.amount
-                                                        ?.let { " · \$$it" }
+                                                    latestIncident
+                                                        .transaction
+                                                        .amount
+                                                        ?.let {
+                                                            " · \$$it"
+                                                        }
                                                         ?: ""
                                                     )
                             )
@@ -13229,7 +14049,8 @@ private fun CustomerHistoryCard(
 
                             Text(
                                 text =
-                                    latestIncident.failureReason,
+                                    latestIncident
+                                        .failureReason,
                                 color =
                                     MenesesDanger,
                                 fontWeight =
@@ -13242,85 +14063,381 @@ private fun CustomerHistoryCard(
                                 color =
                                     MenesesTextSecondary,
                                 style =
-                                    MaterialTheme.typography.bodySmall
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall
                             )
 
                             Text(
                                 text =
-                                    "Incidentes registrados: ${history.financialIncidentsCount}",
+                                    "Incidentes registrados: ${displayedHistory.financialIncidentsCount}",
                                 color =
                                     MenesesTextSecondary,
                                 style =
-                                    MaterialTheme.typography.bodySmall
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall
                             )
                         }
                     }
                 }
             } else {
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MenesesGreenSoft)
+                    modifier =
+                        Modifier
+                            .fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(
+                            20.dp
+                        ),
+                    colors =
+                        CardDefaults
+                            .cardColors(
+                                containerColor =
+                                    MenesesGreenSoft
+                            )
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(
+                                    horizontal =
+                                        18.dp,
+                                    vertical =
+                                        20.dp
+                                ),
+                        horizontalAlignment =
+                            Alignment
+                                .CenterHorizontally,
+                        verticalArrangement =
+                            Arrangement
+                                .spacedBy(
+                                    6.dp
+                                )
                     ) {
                         Text(
-                            text = "Saldo disponible",
-                            color = MenesesGreenDark,
-                            style = MaterialTheme.typography.titleMedium
+                            text =
+                                "Saldo disponible",
+                            color =
+                                MenesesGreenDark,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .titleMedium
                         )
 
                         Text(
-                            text = "\$${history.balance}",
-                            color = MenesesGreen,
-                            fontSize = 42.sp,
-                            lineHeight = 48.sp,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.Center
+                            text =
+                                "\$${displayedHistory.balance}",
+                            color =
+                                MenesesGreen,
+                            fontSize =
+                                42.sp,
+                            lineHeight =
+                                48.sp,
+                            fontWeight =
+                                FontWeight.Bold,
+                            textAlign =
+                                TextAlign.Center
                         )
                     }
                 }
             }
 
+            paymentChangeError
+                ?.let {
+                        error ->
+                    Card(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth(),
+                        colors =
+                            CardDefaults
+                                .cardColors(
+                                    containerColor =
+                                        Color(
+                                            0xFFFFEEEE
+                                        )
+                                )
+                    ) {
+                        Text(
+                            text =
+                                error,
+                            modifier =
+                                Modifier
+                                    .padding(
+                                        14.dp
+                                    ),
+                            color =
+                                MenesesError
+                        )
+                    }
+                }
+
             HorizontalDivider()
 
             Text(
-                text = "Movimientos confirmados",
-                style = MaterialTheme.typography.titleMedium
+                text =
+                    "Movimientos confirmados",
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleMedium
             )
 
-            if (history.items.isEmpty()) {
+            if (
+                visibleItems
+                    .isEmpty()
+            ) {
                 Text(
-                    text = "Esta tarjeta no tiene movimientos confirmados.",
-                    color = MenesesTextSecondary
+                    text =
+                        "Esta tarjeta no tiene movimientos confirmados.",
+                    color =
+                        MenesesTextSecondary
                 )
             } else {
-                history.items.forEach { item ->
-                    CustomerHistoryItemCard(item)
-                }
+                visibleItems
+                    .forEach {
+                            item ->
+                        CustomerHistoryItemCard(
+                            item =
+                                item,
+                            changing =
+                                changingCheckoutId ==
+                                        item.checkoutId,
+                            onChangePaymentMethod = {
+                                    newMethod ->
+                                pendingPaymentChange =
+                                    item to
+                                            newMethod
+                            }
+                        )
+                    }
             }
+
+            /*
+             * La activación se muestra SIEMPRE al final.
+             * El historial de movimientos está ordenado DESC,
+             * por lo que visualmente esto representa el primer
+             * registro histórico de la activación actual.
+             */
+            CustomerHistoryActivationCard(
+                activation =
+                    displayedHistory
+                        .activation
+            )
         }
     }
+
+
+    pendingPaymentChange
+        ?.let {
+                pending ->
+            val item =
+                pending.first
+
+            val newMethod =
+                pending.second
+
+            val oldMethodLabel =
+                when (
+                    item.paymentMethod
+                        ?.uppercase()
+                ) {
+                    "CARD" ->
+                        "Tarjeta"
+
+                    else ->
+                        "Efectivo"
+                }
+
+            val newMethodLabel =
+                if (
+                    newMethod ==
+                    "CARD"
+                ) {
+                    "Tarjeta"
+                } else {
+                    "Efectivo"
+                }
+
+            androidx.compose
+                .material3
+                .AlertDialog(
+                    onDismissRequest = {
+                        if (
+                            changingCheckoutId ==
+                            null
+                        ) {
+                            pendingPaymentChange =
+                                null
+                        }
+                    },
+                    title = {
+                        Text(
+                            "Corregir método de pago"
+                        )
+                    },
+                    text = {
+                        Text(
+                            "Cambiar esta recarga de $oldMethodLabel a $newMethodLabel?\n\n" +
+                                    "Este cambio NO modifica saldo, NFC ni Ledger. " +
+                                    "Solo corrige la clasificación del pago y quedará auditado."
+                        )
+                    },
+                    dismissButton = {
+                        androidx.compose
+                            .material3
+                            .TextButton(
+                                enabled =
+                                    changingCheckoutId ==
+                                            null,
+                                onClick = {
+                                    pendingPaymentChange =
+                                        null
+                                }
+                            ) {
+                                Text(
+                                    "CANCELAR"
+                                )
+                            }
+                    },
+                    confirmButton = {
+                        androidx.compose
+                            .material3
+                            .TextButton(
+                                enabled =
+                                    changingCheckoutId ==
+                                            null,
+                                onClick = {
+                                    val checkoutId =
+                                        item.checkoutId
+                                            ?: return@TextButton
+
+                                    /*
+                                     * Cerramos el diálogo de confirmación inmediatamente.
+                                     * Así, tanto en éxito como en error, el operador vuelve
+                                     * al historial y no queda una ventana secundaria abierta.
+                                     */
+                                    pendingPaymentChange =
+                                        null
+
+                                    changingCheckoutId =
+                                        checkoutId
+
+                                    paymentChangeError =
+                                        null
+
+                                    scope.launch {
+
+                                        try {
+
+                                            val refreshed =
+                                                withContext(
+                                                    Dispatchers.IO
+                                                ) {
+                                                    MenesesApiClient
+                                                        .changeCustomerHistoryPaymentMethod(
+                                                            checkoutId =
+                                                                checkoutId,
+                                                            cardId =
+                                                                displayedHistory
+                                                                    .cardId,
+                                                            uid =
+                                                                displayedHistory
+                                                                    .uid,
+                                                            newPaymentMethod =
+                                                                newMethod
+                                                        )
+
+                                                    MenesesApiClient
+                                                        .getCustomerHistory(
+                                                            cardId =
+                                                                displayedHistory
+                                                                    .cardId,
+                                                            uid =
+                                                                displayedHistory
+                                                                    .uid
+                                                        )
+                                                }
+
+                                            displayedHistory =
+                                                refreshed
+                                                    .copy(
+                                                        nfcBalance =
+                                                            displayedHistory
+                                                                .nfcBalance,
+                                                        nfcTransactionCounter =
+                                                            displayedHistory
+                                                                .nfcTransactionCounter
+                                                    )
+
+                                        } catch (
+                                            e: Exception
+                                        ) {
+
+                                            paymentChangeError =
+                                                e.message
+                                                    ?: "No fue posible corregir el método de pago."
+
+                                            /*
+                                             * El error se presenta en la parte superior del
+                                             * historial. Si el movimiento estaba abajo, subimos
+                                             * automáticamente para que el operador lo vea de
+                                             * inmediato.
+                                             */
+                                            resultScrollState
+                                                .animateScrollTo(
+                                                    0
+                                                )
+
+                                        } finally {
+
+                                            changingCheckoutId =
+                                                null
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text(
+                                    "CONFIRMAR"
+                                )
+                            }
+                    }
+                )
+        }
 }
+
 
 @Composable
 private fun CustomerHistoryItemCard(
-    item: CustomerHistoryItem
+    item: CustomerHistoryItem,
+    changing: Boolean,
+    onChangePaymentMethod: (
+        String
+    ) -> Unit
 ) {
     val isAdminOperation =
-        item.type == "ADJUSTMENT" ||
+        item.type ==
+                "ADJUSTMENT" ||
                 (
-                        item.type == "RECHARGE" &&
-                                item.rechargePointName == null
+                        item.type ==
+                                "RECHARGE" &&
+                                item.rechargePointName ==
+                                null
                         )
 
+    val isPromotionalRecharge =
+        item.type ==
+                "RECHARGE" &&
+                item.promotionId !=
+                null
+
     val amountText =
-        when (item.direction) {
+        when (
+            item.direction
+        ) {
             "CREDIT" ->
                 "+\$${item.amount}"
 
@@ -13333,17 +14450,24 @@ private fun CustomerHistoryItemCard(
 
     val title =
         when {
-            item.type == "ADJUSTMENT" ->
+            item.type ==
+                    "ADJUSTMENT" ->
                 "Quitar saldo"
 
-            item.type == "RECHARGE" &&
+            item.type ==
+                    "RECHARGE" &&
                     isAdminOperation ->
                 "Recarga de saldo"
 
-            item.type == "RECHARGE" ->
+            isPromotionalRecharge ->
+                "Recarga con promoción"
+
+            item.type ==
+                    "RECHARGE" ->
                 "Recarga"
 
-            item.type == "CHARGE" ->
+            item.type ==
+                    "CHARGE" ->
                 "Juego"
 
             else ->
@@ -13355,10 +14479,12 @@ private fun CustomerHistoryItemCard(
             isAdminOperation ->
                 "ADMIN"
 
-            item.rechargePointName != null ->
+            item.rechargePointName !=
+                    null ->
                 item.rechargePointName
 
-            item.gameName != null ->
+            item.gameName !=
+                    null ->
                 item.gameName
 
             else ->
@@ -13366,17 +14492,25 @@ private fun CustomerHistoryItemCard(
         }
 
     val cardColor =
-        if (isAdminOperation) {
+        if (
+            isAdminOperation
+        ) {
             MenesesPurpleSoft
         } else {
-            MaterialTheme.colorScheme.background
+            MaterialTheme
+                .colorScheme
+                .background
         }
 
     val titleColor =
-        if (isAdminOperation) {
+        if (
+            isAdminOperation
+        ) {
             MenesesPurple
         } else {
-            MaterialTheme.colorScheme.onSurface
+            MaterialTheme
+                .colorScheme
+                .onSurface
         }
 
     val amountColor =
@@ -13384,7 +14518,8 @@ private fun CustomerHistoryItemCard(
             isAdminOperation ->
                 MenesesPurple
 
-            item.direction == "CREDIT" ->
+            item.direction ==
+                    "CREDIT" ->
                 MenesesGreenDark
 
             else ->
@@ -13393,86 +14528,385 @@ private fun CustomerHistoryItemCard(
 
     Card(
         modifier =
-            Modifier.fillMaxWidth(),
+            Modifier
+                .fillMaxWidth(),
         shape =
-            RoundedCornerShape(18.dp),
+            RoundedCornerShape(
+                18.dp
+            ),
         colors =
-            CardDefaults.cardColors(
-                containerColor = cardColor
-            )
+            CardDefaults
+                .cardColors(
+                    containerColor =
+                        cardColor
+                )
     ) {
         Column(
             modifier =
-                Modifier.padding(14.dp),
+                Modifier
+                    .padding(
+                        14.dp
+                    ),
             verticalArrangement =
-                Arrangement.spacedBy(4.dp)
+                Arrangement
+                    .spacedBy(
+                        6.dp
+                    )
         ) {
             Row(
                 modifier =
-                    Modifier.fillMaxWidth(),
+                    Modifier
+                        .fillMaxWidth(),
                 horizontalArrangement =
-                    Arrangement.SpaceBetween
+                    Arrangement
+                        .SpaceBetween
             ) {
                 Text(
-                    text = title,
-                    color = titleColor,
+                    text =
+                        title,
+                    color =
+                        titleColor,
                     style =
-                        MaterialTheme.typography.titleMedium,
+                        MaterialTheme
+                            .typography
+                            .titleMedium,
                     fontWeight =
                         FontWeight.Bold
                 )
 
                 Text(
-                    text = amountText,
-                    color = amountColor,
+                    text =
+                        amountText,
+                    color =
+                        amountColor,
                     style =
-                        MaterialTheme.typography.titleMedium,
+                        MaterialTheme
+                            .typography
+                            .titleMedium,
                     fontWeight =
                         FontWeight.Bold
                 )
             }
 
             Text(
-                text = location,
+                text =
+                    location,
                 color =
-                    if (isAdminOperation) {
+                    if (
+                        isAdminOperation
+                    ) {
                         MenesesPurple
                     } else {
                         MenesesTextSecondary
                     },
                 fontWeight =
-                    if (isAdminOperation) {
-                        FontWeight.SemiBold
+                    if (
+                        isAdminOperation
+                    ) {
+                        FontWeight
+                            .SemiBold
                     } else {
-                        FontWeight.Normal
+                        FontWeight
+                            .Normal
                     }
             )
 
+            item.promotionName
+                ?.takeIf {
+                    it.isNotBlank()
+                }
+                ?.let {
+                        promotionName ->
+                    Text(
+                        text =
+                            promotionName,
+                        color =
+                            MenesesPurple,
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+                }
+
             if (
-                item.quantity != null &&
-                item.unitPrice != null
+                isPromotionalRecharge &&
+                item.paidRechargeAmount !=
+                null &&
+                item.promotionalCreditAmount !=
+                null
+            ) {
+                Text(
+                    text =
+                        "Pago del cliente: \$${item.paidRechargeAmount}",
+                    fontWeight =
+                        FontWeight.SemiBold
+                )
+
+                Text(
+                    text =
+                        "Promocional: +\$${item.promotionalCreditAmount}",
+                    color =
+                        MenesesPurple,
+                    fontWeight =
+                        FontWeight.SemiBold
+                )
+            }
+
+            if (
+                item.quantity !=
+                null &&
+                item.unitPrice !=
+                null
             ) {
                 Text(
                     "${item.quantity} personas × \$${item.unitPrice}"
                 )
             }
 
+            if (
+                item.type ==
+                "RECHARGE" &&
+                !isAdminOperation
+            ) {
+                when {
+                    item.paymentMethod !=
+                            null -> {
+                        Text(
+                            text =
+                                "Método de pago: " +
+                                        if (
+                                            item.paymentMethod ==
+                                            "CARD"
+                                        ) {
+                                            "Tarjeta"
+                                        } else {
+                                            "Efectivo"
+                                        },
+                            color =
+                                MenesesTextSecondary,
+                            fontWeight =
+                                FontWeight.SemiBold
+                        )
+                    }
+
+                    else -> {
+                        Text(
+                            text =
+                                "Método de pago: No disponible (operación legacy)",
+                            color =
+                                MenesesTextSecondary,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall
+                        )
+                    }
+                }
+
+                if (
+                    item.paymentMethodEditable &&
+                    item.checkoutId !=
+                    null
+                ) {
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth(),
+                        horizontalArrangement =
+                            Arrangement
+                                .spacedBy(
+                                    8.dp
+                                )
+                    ) {
+                        OutlinedButton(
+                            modifier =
+                                Modifier
+                                    .weight(
+                                        1f
+                                    ),
+                            enabled =
+                                !changing &&
+                                        item.paymentMethod !=
+                                        "CASH",
+                            onClick = {
+                                onChangePaymentMethod(
+                                    "CASH"
+                                )
+                            }
+                        ) {
+                            Text(
+                                if (
+                                    item.paymentMethod ==
+                                    "CASH"
+                                ) {
+                                    "EFECTIVO ✓"
+                                } else {
+                                    "EFECTIVO"
+                                }
+                            )
+                        }
+
+                        OutlinedButton(
+                            modifier =
+                                Modifier
+                                    .weight(
+                                        1f
+                                    ),
+                            enabled =
+                                !changing &&
+                                        item.paymentMethod !=
+                                        "CARD",
+                            onClick = {
+                                onChangePaymentMethod(
+                                    "CARD"
+                                )
+                            }
+                        ) {
+                            Text(
+                                if (
+                                    item.paymentMethod ==
+                                    "CARD"
+                                ) {
+                                    "TARJETA ✓"
+                                } else {
+                                    "TARJETA"
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
             Text(
-                "Saldo: \$${item.balanceBefore} → \$${item.balanceAfter}"
+                text =
+                    "Saldo: \$${item.balanceBefore} → \$${item.balanceAfter}"
             )
 
             Text(
-                formatServerDate(
-                    item.createdAt
-                ),
+                text =
+                    formatServerDate(
+                        item.createdAt
+                    ),
                 color =
                     MenesesTextSecondary,
                 style =
-                    MaterialTheme.typography.bodyMedium
+                    MaterialTheme
+                        .typography
+                        .bodyMedium
             )
         }
     }
 }
+
+
+@Composable
+private fun CustomerHistoryActivationCard(
+    activation:
+    com.espectacularesmeneses.feria.model.CustomerHistoryActivation
+) {
+    Card(
+        modifier =
+            Modifier
+                .fillMaxWidth(),
+        shape =
+            RoundedCornerShape(
+                18.dp
+            ),
+        colors =
+            CardDefaults
+                .cardColors(
+                    containerColor =
+                        MenesesBlueSoft
+                )
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .padding(
+                        14.dp
+                    ),
+            verticalArrangement =
+                Arrangement
+                    .spacedBy(
+                        6.dp
+                    )
+        ) {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement
+                        .SpaceBetween
+            ) {
+                Text(
+                    text =
+                        "Activación de tarjeta",
+                    color =
+                        MenesesBlueDark,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .titleMedium,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                Text(
+                    text =
+                        if (
+                            activation
+                                .activationFeeKnown
+                        ) {
+                            "\$${activation.activationFee}"
+                        } else {
+                            "N/D"
+                        },
+                    color =
+                        MenesesBlueDark,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .titleMedium,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+            }
+
+            Text(
+                text =
+                    "Activación #${activation.activationNumber}",
+                color =
+                    MenesesTextSecondary
+            )
+
+            Text(
+                text =
+                    if (
+                        activation
+                            .activationFeeKnown
+                    ) {
+                        "Tarifa de activación"
+                    } else {
+                        "Tarifa de activación no registrada"
+                    }
+            )
+
+            Text(
+                text =
+                    formatServerDate(
+                        activation.startedAt
+                    ),
+                color =
+                    MenesesTextSecondary,
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodyMedium
+            )
+        }
+    }
+}
+
 
 private fun formatServerDate(value: String): String {
     /*
@@ -13510,4 +14944,5 @@ private fun formatServerDate(value: String): String {
         timeZone = TimeZone.getTimeZone("America/Mexico_City")
     }.format(parsedDate)
 }
+
 
