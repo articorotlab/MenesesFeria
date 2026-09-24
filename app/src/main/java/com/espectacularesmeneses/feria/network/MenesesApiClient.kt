@@ -25,6 +25,27 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
+data class CustomerCardReturnResume(
+    val found: Boolean,
+    val authorization: CustomerCardReturnAuthorization?
+)
+
+
+data class CustomerCardReturnReconciliation(
+    val action: String,
+    val operationId: String,
+    val status: String,
+    val duplicated: Boolean,
+    val returnId: String?,
+    val refundAmount: Long?,
+    val discardedCash: Long?,
+    val discardedPromotional: Long?,
+    val discardedAdminCredit: Long?,
+    val discardedLegacy: Long?,
+    val message: String?
+)
+
+
 object MenesesApiClient {
 
     /*
@@ -1225,6 +1246,389 @@ object MenesesApiClient {
      * -> FAIL
      * =====================================================
      */
+
+    fun resumeCustomerCardReturn(
+        cardId: Long,
+        uid: String
+    ): CustomerCardReturnResume {
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "cardId",
+                    cardId
+                )
+
+                put(
+                    "uid",
+                    uid
+                )
+
+                put(
+                    "deviceCode",
+                    DeviceRuntimeIdentity.deviceCode()
+                )
+            }
+
+
+        val response =
+            postJson(
+                path =
+                    "/customer-support/card-return/resume",
+
+                body =
+                    body
+            )
+
+
+        if (
+            !response.optBoolean(
+                "found",
+                false
+            )
+        ) {
+
+            return CustomerCardReturnResume(
+                found = false,
+                authorization = null
+            )
+        }
+
+
+        val card =
+            response.getJSONObject(
+                "card"
+            )
+
+        val activation =
+            response.getJSONObject(
+                "activation"
+            )
+
+        val refundPolicy =
+            response.getJSONObject(
+                "refundPolicy"
+            )
+
+        val discarded =
+            response.getJSONObject(
+                "discarded"
+            )
+
+        val targetState =
+            response.getJSONObject(
+                "targetState"
+            )
+
+
+        return CustomerCardReturnResume(
+            found = true,
+
+            authorization =
+                CustomerCardReturnAuthorization(
+
+                    operationId =
+                        response.getString(
+                            "operationId"
+                        ),
+
+                    cardId =
+                        card.getLong(
+                            "cardId"
+                        ),
+
+                    uid =
+                        card.getString(
+                            "uid"
+                        ),
+
+                    activationId =
+                        card.getString(
+                            "activationId"
+                        ),
+
+                    balanceBefore =
+                        card.getLong(
+                            "balanceBefore"
+                        ),
+
+                    transactionCounterBefore =
+                        card.getLong(
+                            "transactionCounterBefore"
+                        ),
+
+                    activatedByRole =
+                        activation.getString(
+                            "activatedByRole"
+                        ),
+
+                    activationFee =
+                        activation.getLong(
+                            "activationFee"
+                        ),
+
+                    activationFeeKnown =
+                        activation.getBoolean(
+                            "activationFeeKnown"
+                        ),
+
+                    refundAmount =
+                        response.getLong(
+                            "refundAmount"
+                        ),
+
+                    shouldRefundMoney =
+                        refundPolicy.getBoolean(
+                            "shouldRefundMoney"
+                        ),
+
+                    refundPolicyReason =
+                        refundPolicy.getString(
+                            "reason"
+                        ),
+
+                    refundPolicyMessage =
+                        refundPolicy.getString(
+                            "message"
+                        ),
+
+                    discardedCash =
+                        discarded.getLong(
+                            "cash"
+                        ),
+
+                    discardedPromotional =
+                        discarded.getLong(
+                            "promotional"
+                        ),
+
+                    discardedAdminCredit =
+                        discarded.getLong(
+                            "adminCredit"
+                        ),
+
+                    discardedLegacy =
+                        discarded.getLong(
+                            "legacy"
+                        ),
+
+                    discardedTotal =
+                        discarded.getLong(
+                            "total"
+                        ),
+
+                    targetStatus =
+                        targetState.getString(
+                            "status"
+                        ),
+
+                    targetBalance =
+                        targetState.getLong(
+                            "balance"
+                        ),
+
+                    targetTransactionCounter =
+                        targetState.getLong(
+                            "transactionCounter"
+                        )
+                )
+        )
+    }
+
+
+    fun reconcileCustomerCardReturn(
+        operationId: String,
+        cardId: Long,
+        uid: String,
+        physicalCardId: Long,
+        physicalCardType: String,
+        physicalStatus: String,
+        physicalBalance: Long,
+        physicalTransactionCounter: Long
+    ): CustomerCardReturnReconciliation {
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "operationId",
+                    operationId
+                )
+
+                put(
+                    "cardId",
+                    cardId
+                )
+
+                put(
+                    "uid",
+                    uid
+                )
+
+                put(
+                    "deviceCode",
+                    DeviceRuntimeIdentity.deviceCode()
+                )
+
+                put(
+                    "physicalCardId",
+                    physicalCardId
+                )
+
+                put(
+                    "physicalCardType",
+                    physicalCardType
+                )
+
+                put(
+                    "physicalStatus",
+                    physicalStatus
+                )
+
+                put(
+                    "physicalBalance",
+                    physicalBalance
+                )
+
+                put(
+                    "physicalTransactionCounter",
+                    physicalTransactionCounter
+                )
+            }
+
+
+        val response =
+            postJson(
+                path =
+                    "/customer-support/card-return/reconcile",
+
+                body =
+                    body
+            )
+
+
+        val result =
+            response.optJSONObject(
+                "result"
+            )
+
+
+        return CustomerCardReturnReconciliation(
+
+            action =
+                response.getString(
+                    "action"
+                ),
+
+            operationId =
+                response.getString(
+                    "operationId"
+                ),
+
+            status =
+                response.getString(
+                    "status"
+                ),
+
+            duplicated =
+                response.optBoolean(
+                    "duplicated",
+                    false
+                ),
+
+            returnId =
+                result
+                    ?.optString(
+                        "returnId"
+                    )
+                    ?.takeIf {
+                        it.isNotBlank() &&
+                                it != "null"
+                    },
+
+            refundAmount =
+                result
+                    ?.takeIf {
+                        it.has(
+                            "refundAmount"
+                        ) &&
+                                !it.isNull(
+                                    "refundAmount"
+                                )
+                    }
+                    ?.getLong(
+                        "refundAmount"
+                    ),
+
+            discardedCash =
+                result
+                    ?.takeIf {
+                        it.has(
+                            "discardedCash"
+                        ) &&
+                                !it.isNull(
+                                    "discardedCash"
+                                )
+                    }
+                    ?.getLong(
+                        "discardedCash"
+                    ),
+
+            discardedPromotional =
+                result
+                    ?.takeIf {
+                        it.has(
+                            "discardedPromotional"
+                        ) &&
+                                !it.isNull(
+                                    "discardedPromotional"
+                                )
+                    }
+                    ?.getLong(
+                        "discardedPromotional"
+                    ),
+
+            discardedAdminCredit =
+                result
+                    ?.takeIf {
+                        it.has(
+                            "discardedAdminCredit"
+                        ) &&
+                                !it.isNull(
+                                    "discardedAdminCredit"
+                                )
+                    }
+                    ?.getLong(
+                        "discardedAdminCredit"
+                    ),
+
+            discardedLegacy =
+                result
+                    ?.takeIf {
+                        it.has(
+                            "discardedLegacy"
+                        ) &&
+                                !it.isNull(
+                                    "discardedLegacy"
+                                )
+                    }
+                    ?.getLong(
+                        "discardedLegacy"
+                    ),
+
+            message =
+                response
+                    .optString(
+                        "message"
+                    )
+                    .takeIf {
+                        it.isNotBlank() &&
+                                it != "null"
+                    }
+        )
+    }
+
 
     fun authorizeCustomerCardReturn(
         cardId: Long,

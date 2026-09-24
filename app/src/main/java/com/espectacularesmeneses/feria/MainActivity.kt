@@ -142,9 +142,48 @@ private class CheckoutOperationRecoveredException(
 )
 
 
+data class PendingCheckoutRecoveryPrompt(
+    val checkoutId: String,
+    val targetUid: String,
+    val cardPath: String,
+    val resumeState: String,
+    val paidRecharge: Long,
+    val promotionalCredit: Long,
+    val credited: Long,
+    val activationFee: Long,
+    val totalDue: Long,
+    val paymentMethod: String?,
+    val promotionId: String?
+)
+
+
+private data class ArmedCheckoutRecovery(
+    val checkoutId: String,
+    val targetUid: String
+)
+
+
+private class PendingCheckoutRecoveryRequiredException(
+    val prompt: PendingCheckoutRecoveryPrompt
+) : Exception(
+    "PENDING_CHECKOUT_RECOVERY_REQUIRED"
+)
+
+
+private class WrongCardForCheckoutRecoveryException(
+    val expectedUid: String
+) : Exception(
+    "WRONG_CARD_FOR_CHECKOUT_RECOVERY"
+)
+
+
 class MainActivity :
     ComponentActivity(),
     NfcAdapter.ReaderCallback {
+
+
+
+
 
     private var nfcAdapter:
             NfcAdapter? =
@@ -194,6 +233,24 @@ class MainActivity :
 
     private val nfcProcessing =
         AtomicBoolean(false)
+
+    /*
+     * =====================================================
+     * RECUPERACIÓN CONTROLADA DE CHECKOUT
+     * =====================================================
+     *
+     * El prompt sólo informa. No reconcilia, no confirma y no escribe NFC.
+     * La recuperación armada queda ligada al checkout y UID originales.
+     * =====================================================
+     */
+    private var pendingCheckoutRecoveryPrompt
+            by mutableStateOf<PendingCheckoutRecoveryPrompt?>(
+                null
+            )
+
+    private var armedCheckoutRecovery:
+            ArmedCheckoutRecovery? =
+        null
 
     private var cardResult
             by mutableStateOf<CardReadResult>(
@@ -561,6 +618,9 @@ class MainActivity :
                     cardResult =
                         cardResult,
 
+                    pendingCheckoutRecoveryPrompt =
+                        pendingCheckoutRecoveryPrompt,
+
                     gameSession =
                         gameSession,
 
@@ -911,6 +971,14 @@ class MainActivity :
 
                     onPrepareCardReturn = {
                         prepareCustomerCardReturn()
+                    },
+
+                    onRecoverPendingCheckout = {
+                        recoverPendingCheckout()
+                    },
+
+                    onClosePendingCheckoutRecovery = {
+                        closePendingCheckoutRecoveryPrompt()
                     },
 
                     onCancelOperation = {
@@ -3227,7 +3295,103 @@ class MainActivity :
     }
 
 
+    private fun recoverPendingCheckout() {
+
+        val prompt =
+            pendingCheckoutRecoveryPrompt
+                ?: return
+
+        val paymentMethod =
+            prompt.paymentMethod
+                ?.trim()
+                ?.uppercase()
+                ?.takeIf {
+                    it == "CASH" ||
+                            it == "CARD"
+                }
+                ?: run {
+                    showError(
+                        "La operación pendiente no contiene un método de pago válido."
+                    )
+                    return
+                }
+
+        armedCheckoutRecovery =
+            ArmedCheckoutRecovery(
+                checkoutId =
+                    prompt.checkoutId,
+                targetUid =
+                    prompt.targetUid
+                        .trim()
+                        .uppercase()
+            )
+
+        pendingCheckoutRecoveryPrompt =
+            null
+
+        pendingOperation =
+            NfcOperation.CheckoutRecharge(
+                amount =
+                    prompt.paidRecharge,
+                paymentMethod =
+                    paymentMethod,
+                promotionId =
+                    prompt.promotionId,
+                promotionName =
+                    if (
+                        prompt.promotionId
+                            .isNullOrBlank()
+                    ) {
+                        null
+                    } else {
+                        "Promoción pendiente"
+                    }
+            )
+
+        cardResult =
+            CardReadResult
+                .WaitingForDevCard(
+                    title =
+                        "Recuperar operación",
+                    message =
+                        "Operación pendiente: \$${prompt.totalDue}\n" +
+                                "Método de pago: ${
+                                    if (paymentMethod == "CARD") {
+                                        "Tarjeta"
+                                    } else {
+                                        "Efectivo"
+                                    }
+                                }\n\n" +
+                                "NFC · LECTOR ACTIVO\n\n" +
+                                "Acerca LA MISMA tarjeta CLIENTE para verificarla y recuperar la operación.\n\n" +
+                                "No se iniciará una recarga nueva."
+                )
+    }
+
+
+    private fun closePendingCheckoutRecoveryPrompt() {
+
+        pendingCheckoutRecoveryPrompt =
+            null
+
+        armedCheckoutRecovery =
+            null
+
+        pendingOperation =
+            NfcOperation.Read
+
+        cardResult =
+            CardReadResult.Waiting
+    }
+
+
     private fun cancelPendingOperation() {
+
+        pendingCheckoutRecoveryPrompt =
+            null
+
+        armedCheckoutRecovery =
+            null
 
         pendingOperation =
             NfcOperation.Read
@@ -4780,10 +4944,258 @@ class MainActivity :
             }
 
 
-            val currentCard =
-                readCustomerCard(
-                    tag
+            /*
+             * =================================================
+             * LECTURA RAW PRIMERO
+             * =================================================
+             *
+             * No usamos readCustomerCard() aquí porque una
+             * devolución interrumpida puede haber dejado la NFC
+             * exactamente en AFTER:
+             *
+             * CUSTOMER / INACTIVE / 0 / 0
+             *
+             * En ese caso debemos poder leerla y reconciliar la
+             * operación pendiente SIN volver a escribir NFC.
+             * =================================================
+             */
+
+            val rawData =
+                Ntag215Reader
+                    .readMenesesData(
+                        tag
+                    )
+
+
+            if (
+                !MenesesCardCodec
+                    .isMenesesCard(
+                        rawData
+                    )
+            ) {
+
+                throw IllegalArgumentException(
+                    "La tarjeta no está registrada."
                 )
+            }
+
+
+            val physicalCard =
+                MenesesCardCodec
+                    .decode(
+                        rawData
+                    )
+
+
+            if (
+                physicalCard.type !=
+                CardType.CUSTOMER
+            ) {
+
+                throw IllegalArgumentException(
+                    "La tarjeta no es CUSTOMER."
+                )
+            }
+
+
+            /*
+             * Antes de autorizar una devolución nueva, preguntamos
+             * al backend si ESTA tarjeta ya tiene una devolución
+             * AUTHORIZED pendiente para este dispositivo.
+             *
+             * /resume es read-only.
+             */
+            val pendingReturn =
+                MenesesApiClient
+                    .resumeCustomerCardReturn(
+
+                        cardId =
+                            physicalCard.cardId,
+
+                        uid =
+                            uid
+                    )
+
+
+            if (
+                pendingReturn.found
+            ) {
+
+                val authorization =
+                    pendingReturn.authorization
+                        ?: throw IllegalStateException(
+                            "El servidor reportó una devolución pendiente sin datos de autorización."
+                        )
+
+
+                if (
+                    authorization.cardId !=
+                    physicalCard.cardId ||
+                    !authorization.uid.equals(
+                        uid,
+                        ignoreCase = true
+                    )
+                ) {
+
+                    throw IllegalStateException(
+                        "La devolución pendiente no corresponde a esta tarjeta física."
+                    )
+                }
+
+
+                /*
+                 * RECONCILIACIÓN CONTROLADA:
+                 *
+                 * Android sólo aporta la evidencia física que acaba
+                 * de leer. No escribe ni modifica la NFC.
+                 *
+                 * Backend decide:
+                 * - exact BEFORE -> FAILED_BEFORE
+                 * - exact AFTER  -> CONFIRMED_AFTER
+                 * - otro estado  -> MANUAL_REVIEW_REQUIRED
+                 */
+                val reconciliation =
+                    MenesesApiClient
+                        .reconcileCustomerCardReturn(
+
+                            operationId =
+                                authorization.operationId,
+
+                            cardId =
+                                authorization.cardId,
+
+                            uid =
+                                uid,
+
+                            physicalCardId =
+                                physicalCard.cardId,
+
+                            physicalCardType =
+                                physicalCard.type.name,
+
+                            physicalStatus =
+                                physicalCard.status.name,
+
+                            physicalBalance =
+                                physicalCard.balance,
+
+                            physicalTransactionCounter =
+                                physicalCard.transactionCounter
+                        )
+
+
+                pendingOperation =
+                    NfcOperation.Read
+
+
+                when (
+                    reconciliation.action
+                ) {
+
+                    "CONFIRMED_AFTER",
+                    "ALREADY_CONFIRMED" -> {
+
+                        runOnUiThread {
+
+                            cardResult =
+                                CardReadResult
+                                    .Success(
+
+                                        title =
+                                            "Devolución recuperada",
+
+                                        message =
+                                            if (
+                                                authorization.refundPolicyReason ==
+                                                "ADMIN_CREATED"
+                                            ) {
+
+                                                "Operación anterior recuperada exitosamente.\n\n" +
+                                                        "NO DEVOLVER DINERO\n" +
+                                                        "\$${authorization.refundAmount}\n\n" +
+                                                        "Tarjeta creada por ADMIN\n\n" +
+                                                        "Saldo eliminado: \$${authorization.discardedTotal}\n" +
+                                                        "CASH: \$${authorization.discardedCash}\n" +
+                                                        "PROMOTIONAL: \$${authorization.discardedPromotional}\n" +
+                                                        "ADMIN CREDIT: \$${authorization.discardedAdminCredit}"
+
+                                            } else {
+
+                                                "Operación anterior recuperada exitosamente.\n\n" +
+                                                        "ENTREGAR AL CLIENTE\n" +
+                                                        "\$${authorization.refundAmount}\n\n" +
+                                                        "Saldo eliminado: \$${authorization.discardedTotal}\n" +
+                                                        "CASH: \$${authorization.discardedCash}\n" +
+                                                        "PROMOTIONAL: \$${authorization.discardedPromotional}\n" +
+                                                        "ADMIN CREDIT: \$${authorization.discardedAdminCredit}"
+                                            }
+                                    )
+                        }
+
+
+                        return
+                    }
+
+
+                    "FAILED_BEFORE",
+                    "ALREADY_FAILED" -> {
+
+                        runOnUiThread {
+
+                            cardResult =
+                                CardReadResult
+                                    .Success(
+
+                                        title =
+                                            "Devolución anterior cerrada",
+
+                                        message =
+                                            "La operación anterior no alcanzó a modificar la tarjeta.\n\n" +
+                                                    "No se realizó devolución de dinero ni se eliminó saldo.\n\n" +
+                                                    "Vuelve a seleccionar “Devolver/Resetear Tarjeta” si deseas iniciar una devolución nueva."
+                                    )
+                        }
+
+
+                        return
+                    }
+
+
+                    else -> {
+
+                        throw IllegalStateException(
+                            reconciliation.message
+                                ?: "La devolución pendiente no pudo reconciliarse automáticamente."
+                        )
+                    }
+                }
+            }
+
+
+            /*
+             * =================================================
+             * NO EXISTE DEVOLUCIÓN PENDIENTE
+             * =================================================
+             *
+             * Conservamos exactamente el flujo normal anterior:
+             * sólo una CUSTOMER ACTIVE puede iniciar una nueva
+             * autorización y escritura.
+             * =================================================
+             */
+
+            if (
+                physicalCard.status !=
+                CardStatus.ACTIVE
+            ) {
+
+                throw IllegalArgumentException(
+                    "La tarjeta no está activa."
+                )
+            }
+
+
+            val currentCard =
+                physicalCard
 
 
             val authorization =
@@ -4940,8 +5352,12 @@ class MainActivity :
 
 
             /*
-             * Si todavía NO comenzó la escritura NFC,
-             * podemos cancelar limpiamente la autorización.
+             * Si todavía NO comenzó la escritura NFC de una
+             * autorización NUEVA, podemos cancelarla limpiamente.
+             *
+             * La reconciliación de una operación previa nunca
+             * asigna operationId aquí, por lo que jamás llamará
+             * /fail accidentalmente.
              */
             if (
                 operationId != null &&
@@ -4969,9 +5385,8 @@ class MainActivity :
 
 
             /*
-             * Una vez iniciada la escritura, no afirmamos que
-             * la operación falló de forma limpia. Puede requerir
-             * revisión/reconciliación.
+             * Una vez iniciada la escritura de una devolución
+             * NUEVA, no afirmamos que falló limpiamente.
              */
             if (
                 operationId != null &&
@@ -5172,6 +5587,75 @@ class MainActivity :
                             normalizedUid
                     )
 
+            val armedRecovery =
+                armedCheckoutRecovery
+
+            if (
+                armedRecovery != null
+            ) {
+                if (
+                    normalizedUid !=
+                    armedRecovery.targetUid
+                ) {
+                    throw WrongCardForCheckoutRecoveryException(
+                        expectedUid =
+                            armedRecovery.targetUid
+                    )
+                }
+
+                val resumedCheckoutId =
+                    resume.checkout
+                        ?.checkoutId
+
+                if (
+                    !resume.found ||
+                    resumedCheckoutId !=
+                    armedRecovery.checkoutId
+                ) {
+                    throw IllegalStateException(
+                        "La operación pendiente seleccionada ya no está disponible para recuperación. " +
+                                "No se inició ninguna recarga nueva."
+                    )
+                }
+
+            } else if (
+                resume.found
+            ) {
+                val pendingCheckout =
+                    resume.checkout
+                        ?: throw IllegalStateException(
+                            "El servidor reportó una operación pendiente sin detalle."
+                        )
+
+                throw PendingCheckoutRecoveryRequiredException(
+                    prompt =
+                        PendingCheckoutRecoveryPrompt(
+                            checkoutId =
+                                pendingCheckout.checkoutId,
+                            targetUid =
+                                normalizedUid,
+                            cardPath =
+                                pendingCheckout.cardPath,
+                            resumeState =
+                                resume.state,
+                            paidRecharge =
+                                pendingCheckout.amounts.paidRecharge,
+                            promotionalCredit =
+                                pendingCheckout.amounts.promotionalCredit,
+                            credited =
+                                pendingCheckout.amounts.credited,
+                            activationFee =
+                                pendingCheckout.amounts.activationFee,
+                            totalDue =
+                                pendingCheckout.amounts.totalDue,
+                            paymentMethod =
+                                pendingCheckout.paymentMethod,
+                            promotionId =
+                                pendingCheckout.promotionId
+                        )
+                )
+            }
+
             val execution =
                 if (
                     resume.found
@@ -5291,6 +5775,12 @@ class MainActivity :
                             expectedFinalCard.transactionCounter
                     )
 
+            pendingCheckoutRecoveryPrompt =
+                null
+
+            armedCheckoutRecovery =
+                null
+
             pendingOperation =
                 NfcOperation.Read
 
@@ -5380,8 +5870,49 @@ class MainActivity :
             }
 
         } catch (
+            e: PendingCheckoutRecoveryRequiredException
+        ) {
+
+            pendingOperation =
+                NfcOperation.Read
+
+            armedCheckoutRecovery =
+                null
+
+            runOnUiThread {
+                pendingCheckoutRecoveryPrompt =
+                    e.prompt
+
+                cardResult =
+                    CardReadResult.Waiting
+            }
+
+        } catch (
+            e: WrongCardForCheckoutRecoveryException
+        ) {
+
+            runOnUiThread {
+                cardResult =
+                    CardReadResult
+                        .WaitingForDevCard(
+                            title =
+                                "Recuperación protegida",
+                            message =
+                                "Esta no es la tarjeta asociada a la operación pendiente.\n\n" +
+                                        "No se modificó ninguna NFC ni se creó una recarga nueva.\n\n" +
+                                        "Acerca LA MISMA tarjeta CLIENTE de la operación que elegiste recuperar."
+                        )
+            }
+
+        } catch (
             e: CheckoutOperationRecoveredException
         ) {
+
+            pendingCheckoutRecoveryPrompt =
+                null
+
+            armedCheckoutRecovery =
+                null
 
             pendingOperation =
                 NfcOperation.Read
@@ -5428,6 +5959,12 @@ class MainActivity :
 
                 return
             }
+
+            pendingCheckoutRecoveryPrompt =
+                null
+
+            armedCheckoutRecovery =
+                null
 
             pendingOperation =
                 NfcOperation.Read
@@ -7870,6 +8407,7 @@ private enum class AdminPage {
 @Composable
 fun MenesesHomeScreen(
     cardResult: CardReadResult,
+    pendingCheckoutRecoveryPrompt: PendingCheckoutRecoveryPrompt?,
     gameSession: GameSession?,
     rechargeSession: RechargeSession?,
     adminSession: AdminSession?,
@@ -7940,6 +8478,8 @@ fun MenesesHomeScreen(
     onPrepareBalance: () -> Unit,
     onPrepareHistory: () -> Unit,
     onPrepareCardReturn: () -> Unit,
+    onRecoverPendingCheckout: () -> Unit,
+    onClosePendingCheckoutRecovery: () -> Unit,
     onCancelOperation: () -> Unit,
     onLogoutGame: () -> Unit,
     onLogoutRecharge: () -> Unit,
@@ -8081,6 +8621,15 @@ fun MenesesHomeScreen(
 
     val drawerScope =
         rememberCoroutineScope()
+
+    PendingCheckoutRecoveryDialog(
+        prompt =
+            pendingCheckoutRecoveryPrompt,
+        onRecover =
+            onRecoverPendingCheckout,
+        onClose =
+            onClosePendingCheckoutRecovery
+    )
 
     OperationResultDialog(
         cardResult = cardResult,
@@ -12096,6 +12645,124 @@ private fun EditRechargePointPage(
 
 
 @Composable
+private fun PendingCheckoutRecoveryDialog(
+    prompt: PendingCheckoutRecoveryPrompt?,
+    onRecover: () -> Unit,
+    onClose: () -> Unit
+) {
+    if (
+        prompt == null
+    ) {
+        return
+    }
+
+    val paymentLabel =
+        when (
+            prompt.paymentMethod
+                ?.trim()
+                ?.uppercase()
+        ) {
+            "CARD" -> "Tarjeta"
+            "CASH" -> "Efectivo"
+            else -> "No especificado"
+        }
+
+    val operationLabel =
+        when (
+            prompt.cardPath
+                .trim()
+                .uppercase()
+        ) {
+            "NEW" -> "Alta de tarjeta + recarga"
+            "REUSED" -> "Reactivación + recarga"
+            else -> "Recarga"
+        }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { },
+        title = {
+            Text(
+                "Operación pendiente"
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "Esta tarjeta tiene una operación anterior que todavía no ha terminado."
+                )
+
+                Text(
+                    text =
+                        buildString {
+                            append(
+                                operationLabel
+                            )
+                            append(
+                                "\nCliente pagó / debía pagar: \\$${prompt.totalDue}"
+                            )
+                            append(
+                                "\nRecarga base: \\$${prompt.paidRecharge}"
+                            )
+
+                            if (
+                                prompt.promotionalCredit > 0
+                            ) {
+                                append(
+                                    "\nPromocional: +\\$${prompt.promotionalCredit}"
+                                )
+                            }
+
+                            if (
+                                prompt.activationFee > 0
+                            ) {
+                                append(
+                                    "\nActivación: \\$${prompt.activationFee}"
+                                )
+                            }
+
+                            append(
+                                "\nMétodo de pago: $paymentLabel"
+                            )
+                        },
+                    fontWeight =
+                        FontWeight.SemiBold
+                )
+
+                Text(
+                    "Antes de iniciar otra recarga, verifica y resuelve esta operación.\n\n" +
+                            "RECUPERAR OPERACIÓN no vuelve a cobrar ni inicia una recarga nueva. " +
+                            "Primero exige acercar la misma NFC y compara su estado con BEFORE/AFTER."
+                )
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(
+                onClick =
+                    onClose
+            ) {
+                Text(
+                    "CERRAR"
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick =
+                    onRecover
+            ) {
+                Text(
+                    "RECUPERAR OPERACIÓN"
+                )
+            }
+        }
+    )
+}
+
+
+@Composable
 private fun OperationResultDialog(
     cardResult: CardReadResult,
     onClose: () -> Unit
@@ -14944,5 +15611,3 @@ private fun formatServerDate(value: String): String {
         timeZone = TimeZone.getTimeZone("America/Mexico_City")
     }.format(parsedDate)
 }
-
-
