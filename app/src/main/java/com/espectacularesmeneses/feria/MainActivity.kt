@@ -2922,23 +2922,36 @@ class MainActivity :
     private fun prepareHistoryConsultation() {
 
         if (
-            adminSession == null &&
-            rechargeSession == null
+
+            gameSession == null &&
+
+            rechargeSession == null &&
+
+            adminSession == null
+
         ) {
 
             showError(
-                "El historial solamente está disponible para ADMIN o TAQUILLA."
+
+                "No existe una sesión activa."
+
             )
 
             return
+
         }
 
         pendingOperation =
+
             NfcOperation.ConsultHistory
 
         cardResult =
+
             CardReadResult.WaitingForHistory
+
     }
+
+
 
 
     /*
@@ -8550,6 +8563,7 @@ fun MenesesHomeScreen(
         gameSession != null &&
                 (
                         cardResult is CardReadResult.WaitingForBalance ||
+                                cardResult is CardReadResult.WaitingForHistory ||
                                 cardResult is CardReadResult.WaitingForCharge
                         )
 
@@ -8653,6 +8667,8 @@ fun MenesesHomeScreen(
                         operationArmed = operationArmed,
                         showAdminNavigation =
                             adminSession != null,
+                        showGameNavigation =
+                            gameSession != null,
                         currentAdminPage =
                             adminPage,
                         onAdminHome = {
@@ -8688,6 +8704,23 @@ fun MenesesHomeScreen(
                             ) {
                                 onLoadAdminReportsToday()
                             }
+                        },
+                        onGameHome = {
+                            drawerScope.launch {
+                                drawerState.close()
+                            }
+                        },
+                        onGameBalance = {
+                            drawerScope.launch {
+                                drawerState.close()
+                            }
+                            onPrepareBalance()
+                        },
+                        onGameHistory = {
+                            drawerScope.launch {
+                                drawerState.close()
+                            }
+                            onPrepareHistory()
                         },
                         onCloseDrawer = {
                             drawerScope.launch {
@@ -8915,7 +8948,6 @@ fun MenesesHomeScreen(
                                     onPeopleCountChange = { peopleCount = it },
                                     operationArmed = operationArmed,
                                     onPrepareCharge = onPrepareCharge,
-                                    onPrepareBalance = onPrepareBalance,
                                     onLogoutGame = onLogoutGame
                                 )
                             }
@@ -9020,10 +9052,14 @@ private fun SessionDrawerContent(
     sessionLabel: String,
     operationArmed: Boolean,
     showAdminNavigation: Boolean,
+    showGameNavigation: Boolean,
     currentAdminPage: AdminPage,
     onAdminHome: () -> Unit,
     onAdminPromotions: () -> Unit,
     onAdminReports: () -> Unit,
+    onGameHome: () -> Unit,
+    onGameBalance: () -> Unit,
+    onGameHistory: () -> Unit,
     onCloseDrawer: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -9203,6 +9239,40 @@ private fun SessionDrawerContent(
                         "📊 Reportes"
                     )
                 }
+            }
+        }
+
+        if (showGameNavigation) {
+            HorizontalDivider(
+                color = MenesesBorder
+            )
+
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !operationArmed,
+                onClick = onGameHome,
+                colors =
+                    ButtonDefaults.buttonColors(
+                        containerColor = MenesesBlue
+                    )
+            ) {
+                Text("🎮 Cobrar")
+            }
+
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !operationArmed,
+                onClick = onGameBalance
+            ) {
+                Text("🔎 Consultar saldo")
+            }
+
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !operationArmed,
+                onClick = onGameHistory
+            ) {
+                Text("🧾 Consultar historial")
             }
         }
 
@@ -10721,7 +10791,6 @@ private fun GameDashboard(
     onPeopleCountChange: (Int) -> Unit,
     operationArmed: Boolean,
     onPrepareCharge: (Int) -> Unit,
-    onPrepareBalance: () -> Unit,
     onLogoutGame: () -> Unit
 ) {
     ModeHeroCard(
@@ -10767,12 +10836,6 @@ private fun GameDashboard(
         amount = gameSession.price * peopleCount,
         detail = "$peopleCount × \$${gameSession.price}"
     )
-
-    OutlinedButton(
-        modifier = Modifier.fillMaxWidth(),
-        enabled = !operationArmed,
-        onClick = onPrepareBalance
-    ) { Text("🔎  Consultar saldo") }
 
     PrimaryGreenButton(
         text = "💳  Realizar cobro  \$${gameSession.price * peopleCount}",
@@ -14870,6 +14933,9 @@ private fun CustomerHistoryCard(
                         CustomerHistoryItemCard(
                             item =
                                 item,
+                            allowPaymentMethodEditing =
+                                displayedHistory.requesterRole !=
+                                        "GAME",
                             changing =
                                 changingCheckoutId ==
                                         item.checkoutId,
@@ -15080,6 +15146,7 @@ private fun CustomerHistoryCard(
 @Composable
 private fun CustomerHistoryItemCard(
     item: CustomerHistoryItem,
+    allowPaymentMethodEditing: Boolean,
     changing: Boolean,
     onChangePaymentMethod: (
         String
@@ -15370,6 +15437,7 @@ private fun CustomerHistoryItemCard(
                 }
 
                 if (
+                    allowPaymentMethodEditing &&
                     item.paymentMethodEditable &&
                     item.checkoutId !=
                     null
