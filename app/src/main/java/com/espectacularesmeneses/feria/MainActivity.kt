@@ -99,6 +99,8 @@ import com.espectacularesmeneses.feria.nfc.Ntag215Writer
 import com.espectacularesmeneses.feria.ui.admin.AdminDeviceHistoryScreen
 import com.espectacularesmeneses.feria.ui.admin.AdminReportsScreen
 import com.espectacularesmeneses.feria.ui.admin.AdminPromotionsScreen
+import com.espectacularesmeneses.feria.ui.admin.AdminPromotionCreateScreen
+import com.espectacularesmeneses.feria.ui.admin.AdminPromotionEditScreen
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlue
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlueDark
 import com.espectacularesmeneses.feria.ui.theme.MenesesBlueSoft
@@ -724,12 +726,16 @@ class MainActivity :
                     onCreateAdminPromotion = {
                             name,
                             cashAmount,
-                            promotionalAmount ->
+                            promotionalAmount,
+                            scope,
+                            rechargePointIds ->
 
                         createAdminPromotion(
                             name = name,
                             cashAmount = cashAmount,
-                            promotionalAmount = promotionalAmount
+                            promotionalAmount = promotionalAmount,
+                            scope = scope,
+                            rechargePointIds = rechargePointIds
                         )
                     },
 
@@ -740,6 +746,18 @@ class MainActivity :
                         setAdminPromotionActive(
                             promotion = promotion,
                             active = active
+                        )
+                    },
+
+                    onUpdateAdminPromotionScope = {
+                            promotion,
+                            scope,
+                            rechargePointIds ->
+
+                        updateAdminPromotionScope(
+                            promotion = promotion,
+                            scope = scope,
+                            rechargePointIds = rechargePointIds
                         )
                     },
 
@@ -1327,7 +1345,9 @@ class MainActivity :
     private fun createAdminPromotion(
         name: String,
         cashAmount: Long,
-        promotionalAmount: Long
+        promotionalAmount: Long,
+        scope: String,
+        rechargePointIds: List<String>
     ) {
         if (adminSession == null) {
             return
@@ -1343,7 +1363,9 @@ class MainActivity :
                 PromotionApiClient.createAdminPromotion(
                     name = name,
                     cashAmount = cashAmount,
-                    promotionalAmount = promotionalAmount
+                    promotionalAmount = promotionalAmount,
+                    scope = scope,
+                    rechargePointIds = rechargePointIds
                 )
 
                 val promotions =
@@ -1364,6 +1386,52 @@ class MainActivity :
                 Log.e(
                     "MENESES_PROMOTIONS",
                     "Error creando promoción ADMIN: ${e.message}"
+                )
+            }
+        }.start()
+    }
+
+
+    private fun updateAdminPromotionScope(
+        promotion: AdminPromotion,
+        scope: String,
+        rechargePointIds: List<String>
+    ) {
+        if (adminSession == null) {
+            return
+        }
+
+        runOnUiThread {
+            adminPromotionSaving = true
+            adminPromotionsError = null
+        }
+
+        Thread {
+            try {
+                PromotionApiClient.updateAdminPromotionScope(
+                    promotionId = promotion.id,
+                    scope = scope,
+                    rechargePointIds = rechargePointIds
+                )
+
+                val promotions =
+                    PromotionApiClient.getAdminPromotions()
+
+                runOnUiThread {
+                    adminPromotions = promotions
+                    adminPromotionSaving = false
+                    adminPromotionsError = null
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    adminPromotionSaving = false
+                    adminPromotionsError =
+                        e.message ?: "No fue posible modificar la promoción."
+                }
+
+                Log.e(
+                    "MENESES_PROMOTIONS",
+                    "Error modificando alcance de promoción ADMIN: ${e.message}"
                 )
             }
         }.start()
@@ -8413,6 +8481,8 @@ private enum class AdminPage {
     EDIT_RECHARGE_POINT,
     CARD_PRICE,
     PROMOTIONS,
+    NEW_PROMOTION,
+    EDIT_PROMOTION,
     REPORTS,
     DEVICE_HISTORY
 }
@@ -8454,7 +8524,8 @@ fun MenesesHomeScreen(
     adminDeviceHistoryLoading: Boolean,
     adminDeviceHistoryError: String?,
     onLoadAdminPromotions: () -> Unit,
-    onCreateAdminPromotion: (String, Long, Long) -> Unit,
+    onCreateAdminPromotion: (String, Long, Long, String, List<String>) -> Unit,
+    onUpdateAdminPromotionScope: (AdminPromotion, String, List<String>) -> Unit,
     onSetAdminPromotionActive: (AdminPromotion, Boolean) -> Unit,
     onLoadAdminReports: (String, String) -> Unit,
     onLoadAdminReportsToday: () -> Unit,
@@ -8513,6 +8584,10 @@ fun MenesesHomeScreen(
 
     var selectedAdminRechargePoint by remember {
         mutableStateOf<AdminRechargePoint?>(null)
+    }
+
+    var selectedAdminPromotion by remember {
+        mutableStateOf<AdminPromotion?>(null)
     }
 
     var selectedReportDevice by remember {
@@ -8684,6 +8759,7 @@ fun MenesesHomeScreen(
                                 drawerState.close()
                             }
 
+                            selectedAdminPromotion = null
                             adminPage = AdminPage.PROMOTIONS
                             onLoadAdminPromotions()
                         },
@@ -8842,6 +8918,10 @@ fun MenesesHomeScreen(
                                     adminDeviceHistoryLoading = adminDeviceHistoryLoading,
                                     adminDeviceHistoryError = adminDeviceHistoryError,
                                     selectedReportDevice = selectedReportDevice,
+                                    selectedAdminPromotion = selectedAdminPromotion,
+                                    onSelectAdminPromotion = {
+                                        selectedAdminPromotion = it
+                                    },
                                     onSelectReportDevice = { device ->
                                         selectedReportDevice = device
                                         adminPage = AdminPage.DEVICE_HISTORY
@@ -8860,6 +8940,7 @@ fun MenesesHomeScreen(
                                     },
                                     onLoadAdminPromotions = onLoadAdminPromotions,
                                     onCreateAdminPromotion = onCreateAdminPromotion,
+                                    onUpdateAdminPromotionScope = onUpdateAdminPromotionScope,
                                     onSetAdminPromotionActive = onSetAdminPromotionActive,
                                     onLoadAdminReports = onLoadAdminReports,
                                     onLoadAdminReportsToday = onLoadAdminReportsToday,
@@ -9328,10 +9409,13 @@ private fun AdminDashboard(
     adminDeviceHistoryLoading: Boolean,
     adminDeviceHistoryError: String?,
     selectedReportDevice: AdminDeviceReport?,
+    selectedAdminPromotion: AdminPromotion?,
+    onSelectAdminPromotion: (AdminPromotion?) -> Unit,
     onSelectReportDevice: (AdminDeviceReport) -> Unit,
     onLoadAdminDeviceHistory: () -> Unit,
     onLoadAdminPromotions: () -> Unit,
-    onCreateAdminPromotion: (String, Long, Long) -> Unit,
+    onCreateAdminPromotion: (String, Long, Long, String, List<String>) -> Unit,
+    onUpdateAdminPromotionScope: (AdminPromotion, String, List<String>) -> Unit,
     onSetAdminPromotionActive: (AdminPromotion, Boolean) -> Unit,
     onLoadAdminReports: (String, String) -> Unit,
     onLoadAdminReportsToday: () -> Unit,
@@ -9806,14 +9890,14 @@ private fun AdminDashboard(
                 },
                 onRefresh = onLoadAdminPromotions,
                 onCreatePromotion = {
-                        name,
-                        cashAmount,
-                        promotionalAmount ->
-
-                    onCreateAdminPromotion(
-                        name,
-                        cashAmount,
-                        promotionalAmount
+                    onAdminPageChange(
+                        AdminPage.NEW_PROMOTION
+                    )
+                },
+                onModifyPromotion = { promotion ->
+                    onSelectAdminPromotion(promotion)
+                    onAdminPageChange(
+                        AdminPage.EDIT_PROMOTION
                     )
                 },
                 onSetPromotionActive = { promotion, active ->
@@ -9823,6 +9907,86 @@ private fun AdminDashboard(
                     )
                 }
             )
+        }
+
+        AdminPage.NEW_PROMOTION -> {
+            AdminPromotionCreateScreen(
+                rechargePoints = adminRechargePoints,
+                rechargePointsLoading = adminRechargePointsLoading,
+                saving = adminPromotionSaving,
+                errorMessage = adminPromotionsError,
+                onBack = {
+                    onAdminPageChange(
+                        AdminPage.PROMOTIONS
+                    )
+                },
+                onRefreshRechargePoints =
+                    onRefreshRechargePoints,
+                onCreatePromotion = {
+                        name,
+                        cashAmount,
+                        promotionalAmount,
+                        scope,
+                        rechargePointIds ->
+
+                    onCreateAdminPromotion(
+                        name,
+                        cashAmount,
+                        promotionalAmount,
+                        scope,
+                        rechargePointIds
+                    )
+
+                    onAdminPageChange(
+                        AdminPage.PROMOTIONS
+                    )
+                }
+            )
+        }
+
+        AdminPage.EDIT_PROMOTION -> {
+            val promotion =
+                selectedAdminPromotion
+
+            if (promotion == null) {
+                LaunchedEffect(Unit) {
+                    onAdminPageChange(
+                        AdminPage.PROMOTIONS
+                    )
+                }
+            } else {
+                AdminPromotionEditScreen(
+                    promotion = promotion,
+                    rechargePoints = adminRechargePoints,
+                    rechargePointsLoading =
+                        adminRechargePointsLoading,
+                    saving = adminPromotionSaving,
+                    errorMessage = adminPromotionsError,
+                    onBack = {
+                        onSelectAdminPromotion(null)
+                        onAdminPageChange(
+                            AdminPage.PROMOTIONS
+                        )
+                    },
+                    onRefreshRechargePoints =
+                        onRefreshRechargePoints,
+                    onSaveScope = {
+                            scope,
+                            rechargePointIds ->
+
+                        onUpdateAdminPromotionScope(
+                            promotion,
+                            scope,
+                            rechargePointIds
+                        )
+
+                        onSelectAdminPromotion(null)
+                        onAdminPageChange(
+                            AdminPage.PROMOTIONS
+                        )
+                    }
+                )
+            }
         }
 
 

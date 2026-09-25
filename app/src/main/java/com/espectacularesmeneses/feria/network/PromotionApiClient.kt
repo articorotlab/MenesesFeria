@@ -2,10 +2,12 @@ package com.espectacularesmeneses.feria.network
 
 import com.espectacularesmeneses.feria.device.DeviceRuntimeIdentity
 import com.espectacularesmeneses.feria.model.AdminPromotion
+import com.espectacularesmeneses.feria.model.AdminPromotionRechargePoint
 import com.espectacularesmeneses.feria.model.RechargeAuthorization
 import com.espectacularesmeneses.feria.model.RechargePromotion
 import com.espectacularesmeneses.feria.util.ServerConfig
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 import java.net.HttpURLConnection
@@ -200,7 +202,9 @@ object PromotionApiClient {
     fun createAdminPromotion(
         name: String,
         cashAmount: Long,
-        promotionalAmount: Long
+        promotionalAmount: Long,
+        scope: String,
+        rechargePointIds: List<String>
     ): AdminPromotion {
 
         val body =
@@ -226,6 +230,24 @@ object PromotionApiClient {
                     "promotionalAmount",
                     promotionalAmount
                 )
+
+                put(
+                    "scope",
+                    scope.trim().uppercase()
+                )
+
+                put(
+                    "rechargePointIds",
+                    JSONArray().apply {
+                        rechargePointIds.forEach {
+                                rechargePointId ->
+
+                            put(
+                                rechargePointId
+                            )
+                        }
+                    }
+                )
             }
 
         val response =
@@ -243,6 +265,57 @@ object PromotionApiClient {
             )
         )
     }
+
+    fun updateAdminPromotionScope(
+        promotionId: String,
+        scope: String,
+        rechargePointIds: List<String>
+    ): AdminPromotion {
+
+        val body =
+            JSONObject().apply {
+
+                put(
+                    "deviceCode",
+                    DeviceRuntimeIdentity
+                        .deviceCode()
+                )
+
+                put(
+                    "scope",
+                    scope.trim().uppercase()
+                )
+
+                put(
+                    "rechargePointIds",
+                    JSONArray().apply {
+                        rechargePointIds.forEach {
+                                rechargePointId ->
+
+                            put(
+                                rechargePointId
+                            )
+                        }
+                    }
+                )
+            }
+
+        val response =
+            patchJson(
+                path =
+                    "/admin/promotions/$promotionId/scope",
+
+                body =
+                    body
+            )
+
+        return adminPromotionFromJson(
+            response.getJSONObject(
+                "promotion"
+            )
+        )
+    }
+
 
     fun setAdminPromotionActive(
         promotionId: String,
@@ -391,6 +464,68 @@ object PromotionApiClient {
                     item.getLong(
                         "createdByAdminCardId"
                     )
+                },
+
+            scope =
+                item.optString(
+                    "scope",
+                    "ALL"
+                )
+                    .ifBlank {
+                        "ALL"
+                    }
+                    .uppercase(),
+
+            rechargePoints =
+                buildList {
+
+                    val rechargePointsJson =
+                        item.optJSONArray(
+                            "rechargePoints"
+                        )
+
+                    if (
+                        rechargePointsJson != null
+                    ) {
+
+                        for (
+                        index in
+                        0 until rechargePointsJson.length()
+                        ) {
+
+                            val rechargePoint =
+                                rechargePointsJson
+                                    .getJSONObject(
+                                        index
+                                    )
+
+                            add(
+                                AdminPromotionRechargePoint(
+                                    id =
+                                        rechargePoint.getString(
+                                            "id"
+                                        ),
+
+                                    code =
+                                        rechargePoint.optString(
+                                            "code",
+                                            ""
+                                        ),
+
+                                    name =
+                                        rechargePoint.getString(
+                                            "name"
+                                        ),
+
+                                    status =
+                                        rechargePoint.optString(
+                                            "status",
+                                            ""
+                                        )
+                                )
+                            )
+                        }
+                    }
                 },
 
             createdAt =
